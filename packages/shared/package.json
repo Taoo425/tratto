@@ -1,0 +1,20 @@
+{
+  "name": "@tratto/shared",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/protocol.js",
+  "types": "./dist/protocol.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/protocol.d.ts",
+      "default": "./dist/protocol.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

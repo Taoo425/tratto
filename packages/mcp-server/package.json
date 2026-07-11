@@ -1,0 +1,42 @@
+{
+  "name": "tratto-mcp-server",
+  "version": "0.1.0",
+  "description": "Local MCP server that lets an AI draw technical-analysis lines (support/resistance, trendlines, Fibonacci) directly on Yahoo Finance's native chart. Fully local, no cloud.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "tratto-mcp-server": "./dist/index.js"
+  },
+  "files": [
+    "dist/index.js",
+    "README.md"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Taoo425/tratto.git"
+  },
+  "homepage": "https://github.com/Taoo425/tratto#readme",
+  "bugs": {
+    "url": "https://github.com/Taoo425/tratto/issues"
+  },
+  "scripts": {
+    "build": "npm run typecheck && node build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "ws": "^8.21.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/ws": "^8.5.12",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.6.3"
+  }
+}

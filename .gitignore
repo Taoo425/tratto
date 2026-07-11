@@ -1,0 +1,26 @@
+# deps / build
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# env / secrets
+.env
+.env.*
+
+# os / editor
+.DS_Store
+*.log
+
+# local claude settings
+.claude/settings.local.json
+e2e/artifacts/
+
+# local agent / planning docs (not shared to repo)
+/CLAUDE.md
+/AGENTS.md
+/issues/
+/docs/
+
+# local-only end-to-end test harness (kept on disk, never published)
+/e2e/
