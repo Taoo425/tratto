@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Bridge } from "./bridge.js";
-import { GUIDE_CORE, GUIDE_RECIPES } from "./guide.js";
+import { GUIDE_CORE, GUIDE_RECIPES, GUIDE_ADVANCED } from "./guide.js";
 
 /**
  * Registers the MCP tools exposed to the calling agent:
@@ -20,6 +20,30 @@ export function registerTools(server: McpServer, bridge: Bridge): void {
     isError: response.ok === false,
   });
 
+  // Session-scoped, self-healing style nudge. If the agent starts drawing before it
+  // has fetched the design guide even once, append a one-time reminder to the first
+  // draw result so multi-element markups don't come out unstyled. ~15 tokens, once.
+  let guideFetched = false;
+  let drawNudged = false;
+  const forwardDraw = (response: Awaited<ReturnType<Bridge["sendToExtension"]>>) => {
+    const out = forward(response);
+    if (guideFetched || drawNudged) return out;
+    drawNudged = true;
+    return {
+      ...out,
+      content: [
+        ...out.content,
+        {
+          type: "text" as const,
+          text:
+            "(Style note: the drawing design guide has not been loaded this session. Before " +
+            "any multi-element markup, call get_drawing_guide so colors, weights, fill opacity, " +
+            "and layout stay clean and legible.)",
+        },
+      ],
+    };
+  };
+
   server.registerTool(
     "get_drawing_guide",
     {
@@ -31,28 +55,39 @@ export function registerTools(server: McpServer, bridge: Bridge): void {
         "NOT in the individual tool schemas. CALL THIS ONCE before drawing anything " +
         "beyond a single trivial line (any multi-element markup, 'mark the key levels', " +
         "'draw the trend', etc.) and follow it. Local/static — no chart needed. Pass " +
-        'detail:"recipes" for worked recipes, the full primitive-selection matrix, and ' +
+        'detail:"recipes" for worked recipes, the full selection matrix and collision ' +
+        'rules (non-trivial markups); detail:"advanced" for the long-tail tools ' +
+        "(gann/pitchfork/volume-profile/harmonics/regression), indicator coloring, and " +
         "engine gotchas (date snapping, verified removal, async reloads).",
       inputSchema: {
         detail: z
-          .enum(["core", "recipes"])
+          .enum(["core", "recipes", "advanced"])
           .optional()
           .describe(
-            'Which section to return. "core" (default) = palette, weights, budgets, ' +
-              'composition rules + quick-reference. "recipes" = worked examples, full ' +
-              "selection matrix, and tool gotchas — fetch only for non-trivial markups.",
+            'Which section to return. "core" (default) = palette, weights, fills, budget, ' +
+              'z-order, text/axis-label rules + quick defaults. "recipes" = worked examples, ' +
+              'the full selection matrix and collision rules (non-trivial markups). ' +
+              '"advanced" = long-tail tools, indicator styling, and engine gotchas.',
           ),
       },
     },
-    async (params) => ({
-      content: [
-        {
-          type: "text" as const,
-          text: params?.detail === "recipes" ? GUIDE_RECIPES : GUIDE_CORE,
-        },
-      ],
-      isError: false,
-    }),
+    async (params) => {
+      guideFetched = true;
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              params?.detail === "advanced"
+                ? GUIDE_ADVANCED
+                : params?.detail === "recipes"
+                  ? GUIDE_RECIPES
+                  : GUIDE_CORE,
+          },
+        ],
+        isError: false,
+      };
+    },
   );
 
   server.registerTool(
@@ -186,9 +221,11 @@ export function registerTools(server: McpServer, bridge: Bridge): void {
           .positive()
           .optional()
           .describe("Line width in pixels. Optional; defaults to 1."),
+        pattern: patternSchema(),
+        axis_label: axisLabelSchema(),
       },
     },
-    async (params) => forward(await bridge.sendToExtension("draw_support", params)),
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_support", params)),
   );
 
   server.registerTool(
@@ -228,9 +265,10 @@ export function registerTools(server: McpServer, bridge: Bridge): void {
           .positive()
           .optional()
           .describe("Line width in pixels. Optional; defaults to 1."),
+        pattern: patternSchema(),
       },
     },
-    async (params) => forward(await bridge.sendToExtension("draw_trendline", params)),
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_trendline", params)),
   );
 
   server.registerTool(
@@ -277,9 +315,106 @@ export function registerTools(server: McpServer, bridge: Bridge): void {
           .string()
           .optional()
           .describe('Line/fill color as a CSS hex/name string, e.g. "#FF3B30". Optional.'),
+        ...fibStyleSchema(),
       },
     },
-    async (params) => forward(await bridge.sendToExtension("draw_fib", params)),
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_fib", params)),
+  );
+
+  server.registerTool(
+    "draw_fib_arc",
+    {
+      title: "Draw Fibonacci Arc",
+      description:
+        "Draw a Fibonacci arc from a base (date, price) pivot through a second " +
+        "(date, price) point, plus a 3rd price offsetting the arc radius (3 anchors). " +
+        "Dates snap to the nearest loaded bar. Takes the same style args as draw_fib " +
+        "(levels/colors/labels). For style conventions (weights, palette, when to " +
+        "dash vs solid), follow get_drawing_guide.",
+      inputSchema: {
+        date1: z.string().describe("Date for anchor point 1 (ISO-ish). Snapped to nearest bar."),
+        price1: z.number().describe("Price for anchor point 1."),
+        date2: z.string().describe("Date for anchor point 2 (ISO-ish). Snapped to nearest bar."),
+        price2: z.number().describe("Price for anchor point 2."),
+        price3: z
+          .number()
+          .describe("Price offsetting the arc radius — required (no separate date, same offset axis)."),
+        color: colorSchema(),
+        ...fibStyleSchema(),
+      },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_fib_arc", params)),
+  );
+
+  server.registerTool(
+    "draw_fib_fan",
+    {
+      title: "Draw Fibonacci Fan",
+      description:
+        "Draw a Fibonacci fan from a base (date, price) pivot through a second " +
+        "(date, price) point, plus a 3rd price offsetting the fan lines (3 anchors). " +
+        "Dates snap to the nearest loaded bar. Takes the same style args as draw_fib " +
+        "(levels/colors/labels). For style conventions (weights, palette, when to " +
+        "dash vs solid), follow get_drawing_guide.",
+      inputSchema: {
+        date1: z.string().describe("Date for anchor point 1 (ISO-ish). Snapped to nearest bar."),
+        price1: z.number().describe("Price for anchor point 1."),
+        date2: z.string().describe("Date for anchor point 2 (ISO-ish). Snapped to nearest bar."),
+        price2: z.number().describe("Price for anchor point 2."),
+        price3: z
+          .number()
+          .describe("Price offsetting the fan lines — required (no separate date)."),
+        color: colorSchema(),
+        ...fibStyleSchema(),
+      },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_fib_fan", params)),
+  );
+
+  server.registerTool(
+    "draw_fib_projection",
+    {
+      title: "Draw Fibonacci Projection",
+      description:
+        "Draw a Fibonacci projection across three (date, price) points (a move, then " +
+        "a retracement/pullback, projecting the next move's targets). Dates snap to " +
+        "the nearest loaded bar. Takes the same style args as draw_fib " +
+        "(levels/colors/labels). For style conventions (weights, palette, when to " +
+        "dash vs solid), follow get_drawing_guide.",
+      inputSchema: {
+        date1: z.string().describe("Date for anchor point 1 (ISO-ish). Snapped to nearest bar."),
+        price1: z.number().describe("Price for anchor point 1."),
+        date2: z.string().describe("Date for anchor point 2 (ISO-ish). Snapped to nearest bar."),
+        price2: z.number().describe("Price for anchor point 2."),
+        date3: z.string().describe("Date for anchor point 3 (ISO-ish). Snapped to nearest bar."),
+        price3: z.number().describe("Price for anchor point 3."),
+        color: colorSchema(),
+        ...fibStyleSchema(),
+      },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_fib_projection", params)),
+  );
+
+  server.registerTool(
+    "draw_fib_timezone",
+    {
+      title: "Draw Fibonacci Time Zone",
+      description:
+        "Draw Fibonacci time-zone vertical lines anchored by two (date, price) " +
+        "points, spacing future verticals by Fibonacci ratios of the base interval. " +
+        "Dates snap to the nearest loaded bar. Takes the same style args as draw_fib " +
+        "(levels/colors/labels). For style conventions (weights, palette, when to " +
+        "dash vs solid), follow get_drawing_guide.",
+      inputSchema: {
+        date1: z.string().describe("Date for anchor point 1 (ISO-ish). Snapped to nearest bar."),
+        price1: z.number().describe("Price for anchor point 1."),
+        date2: z.string().describe("Date for anchor point 2 (ISO-ish). Snapped to nearest bar."),
+        price2: z.number().describe("Price for anchor point 2."),
+        color: colorSchema(),
+        ...fibStyleSchema(),
+      },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_fib_timezone", params)),
   );
 
   server.registerTool(
@@ -307,9 +442,9 @@ export function registerTools(server: McpServer, bridge: Bridge): void {
         "Draw a ray (a line through two (date, price) points that extends beyond the " +
         "second point) on the active Yahoo Finance chart. Dates snap to the nearest " +
         "loaded bar. Use get_chart_data for real bar dates/prices to anchor on.",
-      inputSchema: twoPointSchema(),
+      inputSchema: { ...twoPointSchema(), pattern: patternSchema() },
     },
-    async (params) => forward(await bridge.sendToExtension("draw_ray", params)),
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_ray", params)),
   );
 
   server.registerTool(
@@ -320,9 +455,14 @@ export function registerTools(server: McpServer, bridge: Bridge): void {
         "Draw a rectangle between two opposite (date, price) corners on the active " +
         "Yahoo Finance chart — e.g. to box a consolidation range or a supply/demand " +
         "zone. Dates snap to the nearest loaded bar. fill_color is optional.",
-      inputSchema: { ...twoPointSchema(), fill_color: fillColorSchema() },
+      inputSchema: {
+        ...twoPointSchema(),
+        fill_color: fillColorSchema(),
+        pattern: patternSchema(),
+        fill_opacity: fillOpacitySchema(),
+      },
     },
-    async (params) => forward(await bridge.sendToExtension("draw_rectangle", params)),
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_rectangle", params)),
   );
 
   server.registerTool(
@@ -333,9 +473,14 @@ export function registerTools(server: McpServer, bridge: Bridge): void {
         "Draw a parallel channel from two (date, price) points on the active Yahoo " +
         "Finance chart (a trend line with a parallel band). Dates snap to the nearest " +
         "loaded bar. fill_color is optional.",
-      inputSchema: { ...twoPointSchema(), fill_color: fillColorSchema() },
+      inputSchema: {
+        ...twoPointSchema(),
+        fill_color: fillColorSchema(),
+        pattern: patternSchema(),
+        fill_opacity: fillOpacitySchema(),
+      },
     },
-    async (params) => forward(await bridge.sendToExtension("draw_channel", params)),
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_channel", params)),
   );
 
   server.registerTool(
@@ -351,13 +496,12 @@ export function registerTools(server: McpServer, bridge: Bridge): void {
           .describe("Date for the vertical line (ISO-ish, e.g. from get_chart_data). Snapped to nearest bar."),
         color: colorSchema(),
         line_width: lineWidthSchema(),
-        pattern: z
-          .string()
-          .optional()
-          .describe('Line pattern: "solid" | "dashed" | "dotted". Optional; defaults to solid.'),
+        pattern: patternSchema(),
+        axis_label: axisLabelSchema(),
+        span_panels: spanPanelsSchema(),
       },
     },
-    async (params) => forward(await bridge.sendToExtension("draw_vertical", params)),
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_vertical", params)),
   );
 
   server.registerTool(
@@ -378,9 +522,23 @@ export function registerTools(server: McpServer, bridge: Bridge): void {
           .boolean()
           .optional()
           .describe("true (default) = boxed callout; false = borderless annotation."),
+        line_width: lineWidthSchema(),
+        pattern: patternSchema(),
+        border_color: z
+          .string()
+          .optional()
+          .describe("Border color as a CSS hex/name string. Meaningful for boxed callouts. Optional."),
+        bg_color: z
+          .string()
+          .optional()
+          .describe("Background fill color as a CSS hex/name string. Meaningful for boxed callouts. Optional."),
+        font_size: fontSizeSchema(),
+        font_weight: fontWeightSchema(),
+        font_style: fontStyleSchema(),
+        font_family: fontFamilySchema(),
       },
     },
-    async (params) => forward(await bridge.sendToExtension("draw_callout", params)),
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_callout", params)),
   );
 
   server.registerTool(
@@ -400,7 +558,325 @@ export function registerTools(server: McpServer, bridge: Bridge): void {
           .describe("Serialized drawing fields (col/lw/ptrn/v0/v1/d0/d1/text/...). pnl is added for you."),
       },
     },
-    async (params) => forward(await bridge.sendToExtension("draw_raw", params)),
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_raw", params)),
+  );
+
+  server.registerTool(
+    "draw_crossline",
+    {
+      title: "Draw Crossline",
+      description:
+        "Draw a crossline (a full horizontal+vertical crosshair pinned at one " +
+        "(date, price) point) on the active Yahoo Finance chart. The date snaps to " +
+        "the nearest loaded bar. For style conventions (weights, palette, when to " +
+        "dash vs solid), follow get_drawing_guide.",
+      inputSchema: {
+        date: z.string().describe("Anchor date (ISO-ish, e.g. from get_chart_data). Snapped to nearest bar."),
+        price: z.number().describe("Anchor price (y-axis value)."),
+        color: colorSchema(),
+        line_width: lineWidthSchema(),
+        pattern: patternSchema(),
+        axis_label: axisLabelSchema(),
+        span_panels: spanPanelsSchema(),
+      },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_crossline", params)),
+  );
+
+  server.registerTool(
+    "draw_line",
+    {
+      title: "Draw Infinite Line",
+      description:
+        "Draw a straight line through two (date, price) points that extends " +
+        "infinitely in both directions (unlike draw_trendline, which stops at the " +
+        "points) on the active Yahoo Finance chart. Dates snap to the nearest loaded " +
+        "bar. For style conventions (weights, palette, when to dash vs solid), " +
+        "follow get_drawing_guide.",
+      inputSchema: { ...twoPointSchema(), pattern: patternSchema() },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_line", params)),
+  );
+
+  server.registerTool(
+    "draw_arrow",
+    {
+      title: "Draw Arrow",
+      description:
+        "Draw an arrow between two (date, price) points on the active Yahoo Finance " +
+        "chart, arrowhead at point 2. Dates snap to the nearest loaded bar. " +
+        "fill_color styles the arrowhead. For style conventions (weights, palette, " +
+        "when to dash vs solid), follow get_drawing_guide.",
+      inputSchema: { ...twoPointSchema(), pattern: patternSchema(), fill_color: fillColorSchema(), fill_opacity: fillOpacitySchema() },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_arrow", params)),
+  );
+
+  server.registerTool(
+    "draw_ellipse",
+    {
+      title: "Draw Ellipse",
+      description:
+        "Draw an ellipse on the active Yahoo Finance chart from a center point to an " +
+        "edge point (point 1 = center, point 2 = a point on the ellipse's edge, not " +
+        "an opposite corner). Dates snap to the nearest loaded bar. fill_color/" +
+        "fill_opacity are optional. For style conventions (weights, palette, when to " +
+        "dash vs solid), follow get_drawing_guide.",
+      inputSchema: {
+        date1: z.string().describe("Date for the center point (ISO-ish). Snapped to nearest bar."),
+        price1: z.number().describe("Price for the center point."),
+        date2: z.string().describe("Date for the edge point (ISO-ish). Snapped to nearest bar."),
+        price2: z.number().describe("Price for the edge point."),
+        color: colorSchema(),
+        line_width: lineWidthSchema(),
+        pattern: patternSchema(),
+        fill_color: fillColorSchema(),
+        fill_opacity: fillOpacitySchema(),
+      },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_ellipse", params)),
+  );
+
+  server.registerTool(
+    "draw_pitchfork",
+    {
+      title: "Draw Andrews' Pitchfork",
+      description:
+        "Draw an Andrews' pitchfork (3 parallel rays fanning from an equidistant " +
+        "center) across three (date, price) points on the active Yahoo Finance " +
+        "chart. Dates snap to the nearest loaded bar. For style conventions " +
+        "(weights, palette, when to dash vs solid), follow get_drawing_guide.",
+      inputSchema: {
+        date1: z.string().describe("Date for point 1 (ISO-ish). Snapped to nearest bar."),
+        price1: z.number().describe("Price for point 1."),
+        date2: z.string().describe("Date for point 2 (ISO-ish). Snapped to nearest bar."),
+        price2: z.number().describe("Price for point 2."),
+        date3: z.string().describe("Date for point 3 (ISO-ish). Snapped to nearest bar."),
+        price3: z.number().describe("Price for point 3."),
+        color: colorSchema(),
+        line_width: lineWidthSchema(),
+        pattern: patternSchema(),
+      },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_pitchfork", params)),
+  );
+
+  server.registerTool(
+    "draw_gann_fan",
+    {
+      title: "Draw Gann Fan",
+      description:
+        "Draw a Gann fan (fixed-ratio angled lines) between two (date, price) " +
+        "points on the active Yahoo Finance chart. Dates snap to the nearest loaded " +
+        "bar. For style conventions (weights, palette, when to dash vs solid), " +
+        "follow get_drawing_guide.",
+      inputSchema: { ...twoPointSchema(), pattern: patternSchema(), fill_color: fillColorSchema(), fill_opacity: fillOpacitySchema() },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_gann_fan", params)),
+  );
+
+  server.registerTool(
+    "draw_speed_arc",
+    {
+      title: "Draw Speed Resistance Arc",
+      description:
+        "Draw speed resistance arcs (1/3 and 2/3 retracement arcs of the move) " +
+        "between two (date, price) points on the active Yahoo Finance chart. Dates " +
+        "snap to the nearest loaded bar. For style conventions (weights, palette, " +
+        "when to dash vs solid), follow get_drawing_guide.",
+      inputSchema: { ...twoPointSchema(), pattern: patternSchema(), fill_color: fillColorSchema(), fill_opacity: fillOpacitySchema() },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_speed_arc", params)),
+  );
+
+  server.registerTool(
+    "draw_speed_line",
+    {
+      title: "Draw Speed Resistance Line",
+      description:
+        "Draw speed resistance lines (1/3 and 2/3 retracement lines of the move) " +
+        "between two (date, price) points on the active Yahoo Finance chart. Dates " +
+        "snap to the nearest loaded bar. For style conventions (weights, palette, " +
+        "when to dash vs solid), follow get_drawing_guide.",
+      inputSchema: { ...twoPointSchema(), pattern: patternSchema(), fill_color: fillColorSchema(), fill_opacity: fillOpacitySchema() },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_speed_line", params)),
+  );
+
+  server.registerTool(
+    "draw_time_cycle",
+    {
+      title: "Draw Time Cycle",
+      description:
+        "Draw repeating vertical time-cycle lines spaced by the interval between two " +
+        "(date, price) points on the active Yahoo Finance chart. Dates snap to the " +
+        "nearest loaded bar. For style conventions (weights, palette, when to dash " +
+        "vs solid), follow get_drawing_guide.",
+      inputSchema: { ...twoPointSchema(), pattern: patternSchema(), fill_color: fillColorSchema(), fill_opacity: fillOpacitySchema() },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_time_cycle", params)),
+  );
+
+  server.registerTool(
+    "draw_measurement",
+    {
+      title: "Draw Measurement Line",
+      description:
+        "Draw a measurement line between two (date, price) points on the active " +
+        "Yahoo Finance chart — shows the bar count and price delta between them by " +
+        "default. Dates snap to the nearest loaded bar. For style conventions " +
+        "(weights, palette, when to dash vs solid), follow get_drawing_guide.",
+      inputSchema: { ...twoPointSchema(), pattern: patternSchema() },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_measurement", params)),
+  );
+
+  server.registerTool(
+    "draw_volume_profile",
+    {
+      title: "Draw Volume Profile",
+      description:
+        "Draw a volume profile (a horizontal histogram of traded volume by price " +
+        "bucket) over a date range on the active Yahoo Finance chart. Anchored by " +
+        "two DATES ONLY — price levels/buckets are computed from the data in that " +
+        "window, not from price args. Dates snap to the nearest loaded bar. For " +
+        "style conventions (weights, palette, when to dash vs solid), follow " +
+        "get_drawing_guide.",
+      inputSchema: {
+        ...dateRangeSchema(),
+        color: colorSchema(),
+        line_width: lineWidthSchema(),
+        pattern: patternSchema(),
+        fill_color: fillColorSchema(),
+        fill_opacity: fillOpacitySchema(),
+        price_buckets: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Number of price buckets in the histogram. Optional; defaults to 30."),
+      },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_volume_profile", params)),
+  );
+
+  server.registerTool(
+    "draw_quadrant_lines",
+    {
+      title: "Draw Quadrant Lines",
+      description:
+        "Draw quadrant lines (equal price-quartile dividers) over a date range on " +
+        "the active Yahoo Finance chart. Anchored by two DATES ONLY — price levels " +
+        "are computed from the data in that window, not from price args. Dates snap " +
+        "to the nearest loaded bar. For style conventions (weights, palette, when to " +
+        "dash vs solid), follow get_drawing_guide.",
+      inputSchema: {
+        ...dateRangeSchema(),
+        color: colorSchema(),
+        line_width: lineWidthSchema(),
+        pattern: patternSchema(),
+        fill_color: fillColorSchema(),
+        fill_opacity: fillOpacitySchema(),
+      },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_quadrant_lines", params)),
+  );
+
+  server.registerTool(
+    "draw_tirone_levels",
+    {
+      title: "Draw Tirone Levels",
+      description:
+        "Draw Tirone levels (a fixed set of horizontal support/resistance dividers) " +
+        "over a date range on the active Yahoo Finance chart. Anchored by two DATES " +
+        "ONLY — price levels are computed from the data in that window, not from " +
+        "price args. Dates snap to the nearest loaded bar. For style conventions " +
+        "(weights, palette, when to dash vs solid), follow get_drawing_guide.",
+      inputSchema: {
+        ...dateRangeSchema(),
+        color: colorSchema(),
+        line_width: lineWidthSchema(),
+        pattern: patternSchema(),
+        fill_color: fillColorSchema(),
+        fill_opacity: fillOpacitySchema(),
+      },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_tirone_levels", params)),
+  );
+
+  server.registerTool(
+    "draw_average_line",
+    {
+      title: "Draw Average (Regression + Axis Label) Line",
+      description:
+        "Draw a linear regression fit line with an axis label over a date range on " +
+        "the active Yahoo Finance chart, with up to 3 optional standard-deviation " +
+        "band channels around it. Anchored by two DATES ONLY — price levels are " +
+        "computed from the data in that window, not from price args. Dates snap to " +
+        "the nearest loaded bar. For style conventions (weights, palette, when to " +
+        "dash vs solid), follow get_drawing_guide.",
+      inputSchema: {
+        ...dateRangeSchema(),
+        color: colorSchema(),
+        line_width: lineWidthSchema(),
+        pattern: patternSchema(),
+        axis_label: axisLabelSchema(),
+        bands: bandsSchema(),
+      },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_average_line", params)),
+  );
+
+  server.registerTool(
+    "draw_regression_line",
+    {
+      title: "Draw Regression Line",
+      description:
+        "Draw a linear regression fit line over a date range on the active Yahoo " +
+        "Finance chart, with up to 3 optional standard-deviation band channels " +
+        "around it. Anchored by two DATES ONLY — price levels are computed from the " +
+        "data in that window, not from price args. Dates snap to the nearest loaded " +
+        "bar. For style conventions (weights, palette, when to dash vs solid), " +
+        "follow get_drawing_guide.",
+      inputSchema: {
+        ...dateRangeSchema(),
+        color: colorSchema(),
+        line_width: lineWidthSchema(),
+        pattern: patternSchema(),
+        bands: bandsSchema(),
+      },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_regression_line", params)),
+  );
+
+  server.registerTool(
+    "draw_gartley",
+    {
+      title: "Draw Gartley Pattern",
+      description:
+        "Draw a Gartley harmonic pattern across 5 (date, price) points — X, A, B, C, " +
+        "D, in that sequence — on the active Yahoo Finance chart. Dates snap to the " +
+        "nearest loaded bar. For style conventions (weights, palette, when to dash " +
+        "vs solid), follow get_drawing_guide.",
+      inputSchema: {
+        xDate: z.string().describe("Date for point X (ISO-ish). Snapped to nearest bar."),
+        xPrice: z.number().describe("Price for point X."),
+        aDate: z.string().describe("Date for point A (ISO-ish). Snapped to nearest bar."),
+        aPrice: z.number().describe("Price for point A."),
+        bDate: z.string().describe("Date for point B (ISO-ish). Snapped to nearest bar."),
+        bPrice: z.number().describe("Price for point B."),
+        cDate: z.string().describe("Date for point C (ISO-ish). Snapped to nearest bar."),
+        cPrice: z.number().describe("Price for point C."),
+        dDate: z.string().describe("Date for point D (ISO-ish). Snapped to nearest bar."),
+        dPrice: z.number().describe("Price for point D."),
+        color: colorSchema(),
+        line_width: lineWidthSchema(),
+        pattern: patternSchema(),
+        fill_color: fillColorSchema(),
+        fill_opacity: fillOpacitySchema(),
+      },
+    },
+    async (params) => forwardDraw(await bridge.sendToExtension("draw_gartley", params)),
   );
 
   server.registerTool(
@@ -663,6 +1139,22 @@ export function registerTools(server: McpServer, bridge: Bridge): void {
           .record(z.any())
           .optional()
           .describe('Study-specific inputs, e.g. { "Period": 14 }. Optional — engine defaults are used otherwise.'),
+        outputs: z
+          .record(z.any())
+          .optional()
+          .describe(
+            "Per-output-line style, keyed by the study's output names (see list_indicators' " +
+              '`outputs` field once populated, e.g. "MA" or "Bollinger Bands Top"). Each value ' +
+              'is either a color string (e.g. "#00FF00") or an object { color?, width?, pattern? }. ' +
+              "Optional — this is the color/width/pattern knob for indicator lines.",
+          ),
+        parameters: z
+          .record(z.any())
+          .optional()
+          .describe(
+            'Study-level parameters, e.g. { "panelName": "New panel" } to force the study into ' +
+              "its own panel, or oscillator zone settings. Optional.",
+          ),
       },
     },
     async (params) => forward(await bridge.sendToExtension("add_indicator", params)),
@@ -733,5 +1225,125 @@ function twoPointSchema() {
     price2: z.number().describe("Price (y-axis value) for point 2."),
     color: colorSchema(),
     line_width: lineWidthSchema(),
+  };
+}
+function patternSchema() {
+  return z.string().optional().describe('Line pattern: "solid" | "dashed" | "dotted". Optional; defaults to solid.');
+}
+function axisLabelSchema() {
+  return z
+    .boolean()
+    .optional()
+    .describe(
+      "Show the value/date tag on the axis for this drawing. Optional; defaults to off. " +
+        "Guide: prefer this over a text label for a pure price level (native badge, zero " +
+        "canvas ink); max 2 per chart, decision levels only.",
+    );
+}
+function spanPanelsSchema() {
+  return z
+    .boolean()
+    .optional()
+    .describe(
+      "Draw the line across all stacked panels (price + study panels) instead of just its " +
+        "own panel. Optional; defaults to false.",
+    );
+}
+function fillOpacitySchema() {
+  return z
+    .number()
+    .min(0)
+    .max(1)
+    .optional()
+    .describe(
+      "Fill opacity from 0 (transparent) to 1 (opaque), baked into fill_color as an rgba " +
+        "alpha (ChartIQ has no separate opacity field). Only meaningful together with fill_color. " +
+        "Guide budget: 0.10 zones/rectangles, 0.08 channels & large shapes, 0.15 max.",
+    );
+}
+function fontSizeSchema() {
+  return z
+    .number()
+    .positive()
+    .optional()
+    .describe(
+      'Font size in pixels — a NUMBER (e.g. 14), not a CSS string like "14px". Optional. ' +
+        "Guide default: 11 (12 for a single headline label).",
+    );
+}
+function fontWeightSchema() {
+  return z.string().optional().describe('Font weight, e.g. "normal" | "bold". Optional.');
+}
+function fontStyleSchema() {
+  return z.string().optional().describe('Font style, e.g. "normal" | "italic". Optional.');
+}
+function fontFamilySchema() {
+  return z.string().optional().describe('Font family, e.g. "Arial". Optional.');
+}
+function dateRangeSchema() {
+  return {
+    date1: z.string().describe("Range start date (ISO-ish, e.g. from get_chart_data). Snapped to nearest bar."),
+    date2: z.string().describe("Range end date (ISO-ish). Snapped to nearest bar."),
+  };
+}
+function bandsSchema() {
+  return z
+    .array(
+      z.object({
+        enabled: z.boolean().optional().describe("Whether this band is shown. Optional; defaults to true."),
+        color: colorSchema(),
+        line_width: lineWidthSchema(),
+        pattern: z
+          .string()
+          .optional()
+          .describe('Band line pattern: "solid" | "dashed" | "dotted". Optional; defaults to dotted for bands.'),
+      }),
+    )
+    .max(3)
+    .optional()
+    .describe(
+      "Up to 3 standard-deviation band channels around the fit line, in order (entry 0 = " +
+        "band 1, entry 1 = band 2, entry 2 = band 3). Each entry is independently optional; " +
+        "omit `bands` entirely for no bands. Pattern defaults to dotted for bands. " +
+        "Guide: prefer ONE band, dotted, same (purple) hue as the line.",
+    );
+}
+function fibStyleSchema() {
+  return {
+    line_width: lineWidthSchema(),
+    pattern: patternSchema(),
+    fill_color: z
+      .string()
+      .optional()
+      .describe(
+        "Fill color for the level bands. Optional. Guide: prefer \"transparent\" — the " +
+          "engine's default wash buries the candles.",
+      ),
+    fill_opacity: fillOpacitySchema(),
+    levels: z
+      .array(z.number())
+      .optional()
+      .describe(
+        "Which Fibonacci levels to show, as FRACTIONS (0.618, 1.272, -0.786 — not percent). " +
+          "Optional; defaults to ChartIQ's standard on-set " +
+          "[-0.618, -0.382, 0, 0.382, 0.5, 0.618, 1, 1.382, 1.618]. Guide: for a clean read " +
+          "prefer [0, 0.382, 0.5, 0.618, 1]; add 1.272/1.618 only when projecting targets.",
+      ),
+    level_color: z
+      .string()
+      .optional()
+      .describe("Color for the level lines as a CSS hex/name string. Optional; defaults to auto."),
+    show_labels: z
+      .boolean()
+      .optional()
+      .describe('Show the level % labels (e.g. "61.8%"). Optional; defaults to true.'),
+    show_prices: z
+      .boolean()
+      .optional()
+      .describe("Show the price value at each level. Optional; defaults to false."),
+    extend_left: z
+      .boolean()
+      .optional()
+      .describe("Extend the level lines to the left of the anchor points. Optional; defaults to false."),
   };
 }

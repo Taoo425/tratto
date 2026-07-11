@@ -4,145 +4,121 @@
  * through the MCP `get_drawing_guide` tool so it travels with the tools (works
  * for Claude Code, Codex, any MCP agent — zero install).
  *
+ * Three layers, disclosed on demand to stay token-cheap:
+ *   GUIDE_CORE     (detail:"core", default) — palette, tiers, fills, budget, text.
+ *   GUIDE_RECIPES  (detail:"recipes")       — worked recipes, selection matrix, collisions.
+ *   GUIDE_ADVANCED (detail:"advanced")      — long-tail tools + indicator styling + gotchas.
+ *
  * Plain text on purpose: consumed by an LLM as guidance, so no backticks/fences
  * (which would break these template literals under tsc). Single source of truth.
  */
 
-export const GUIDE_CORE = `Tratto — Pro Desk Annotation System
+export const GUIDE_CORE = `Tratto — Pro Desk Annotation System (core)
 
-The Tratto MCP tools tell you WHAT params each drawing takes. This guide tells you
-HOW a pro desk analyst uses them, so a chart with several overlays stays clean and
-instantly readable to BOTH a seasoned trader and a novice. Design discipline beats
-capability: fewer, well-chosen, well-styled marks always win.
+The tool schemas tell you WHAT each drawing takes. This tells you HOW to draw so a
+marked-up chart stays clean and instantly readable to a pro AND a novice. Two voices,
+one chart: DRAWINGS are claims (saturated, deliberate), INDICATORS are context (muted,
+thin). Fewer, well-chosen marks always beat more.
 
 WORKFLOW (every session)
-1. Reach the chart: open_chart(symbol) first (handles the connect-on-refresh quirk).
-2. See the state: get_chart_summary (range, last close, high/low) + read_drawings
-   (what is already there — never draw a near-duplicate of an existing line).
-3. Plan, then budget: decide the ONE idea the chart should convey. List the marks it
-   needs, drop everything below the element budget. If the ask exceeds budget, draw
-   the top-N by importance and TELL the user what you omitted — do not draw everything.
-4. Draw in z-order (see Composition). Set colors EXPLICITLY on every mark — never rely
-   on Yahoo "auto".
-5. Verify: read_drawings to confirm. If replacing a view, clear_drawings(scope:"mine")
-   first so you do not stack onto stale lines.
+1. open_chart(symbol), then get_chart_summary + read_drawings (never near-duplicate an
+   existing line).
+2. Doing a multi-element markup? Prefer candles: set_chart_style("candle"). Yahoo's
+   default LINE chart paints price in bright blue — blue drawings camouflage against it.
+   If you stay on a line/area chart, do not use #2962FF for anything that crosses the
+   price path; use the directional color or gray instead.
+3. Decide the ONE idea the chart should convey, list the marks, cut to budget. If the
+   ask exceeds budget, draw the top-N by importance and SAY what you omitted.
+4. Set color/width/pattern EXPLICITLY on every mark — never rely on "auto".
+5. Verify with read_drawings. Replacing a view? clear_drawings(scope:"mine") first.
 
-SEMANTIC PALETTE (the whole palette — use nothing else)
-Chosen to read on BOTH light and dark chart themes. Color is a CLAIM, not decoration.
+SEMANTIC PALETTE (the whole palette — color is a claim, use nothing else)
+Every hex holds on BOTH light and dark chart themes.
 
 | Hex | Meaning | Used on |
 |---|---|---|
-| #089981 green | support / demand / bullish structure | horizontals below price, demand zones, up-trend lines |
-| #F23645 red | resistance / supply / bearish structure | horizontals above price, supply zones, down-trend lines |
-| #2962FF blue | neutral directional structure | trendlines/channels/rays with no bull/bear claim |
-| #9B51E0 purple | derived/computed levels | Fibonacci (its only color), pitchfork/VWAP via draw_raw |
-| #787B86 gray | time & commentary, zero opinion | vertical event markers, free-standing label text |
-| #FF9800 amber | the single "look here" flag | breakout/invalidation/gap — MAX ONE per chart |
+| #089981 green | support / demand / bullish | horizontals below price, demand zones, up trendlines |
+| #F23645 red | resistance / supply / bearish | horizontals above price, supply zones, down trendlines |
+| #2962FF blue | analyst-placed structure, no bull/bear claim | trendlines, channels, rays, pitchfork, patterns (Gartley) |
+| #9B51E0 purple | computed geometry — "the math drew this" | ALL fib tools, regression, average, quadrant, tirone, gann, speed, time cycle |
+| #787B86 gray | zero-opinion context | verticals/events, crosslines, measurements, volume profile, free commentary |
+| #FF9800 amber | the single "look here" flag | breakout, invalidation, gap — MAX ONE per chart |
 
-- 4 distinct hues max per chart (gray does not count).
-- Green/red mean position vs price (support/resistance). A trendline is BLUE unless its
-  break direction is the actual thesis.
-- Label text inherits its parent element's hue; standalone commentary is gray.
+- Max 4 hues per chart (gray is free). Green/red = position vs price. A trendline is BLUE
+  unless its break direction IS the thesis.
+- Never place a red DASHED horizontal within ~0.5% of the last price — Yahoo's own
+  last-price marker is exactly that (a red dashed line + red axis badge). To flag the
+  current level, use amber instead.
 
-FILLS (fill_color on zones/channels): same hue as the border + low alpha. Use 8-digit
-hex for translucency — demand #0899811A (~10%), supply #F236451A, channel #2962FF14
-(~8%, channels cover more area). Never exceed ~15% (26). Never fill a hue different from
-the border. (If a fill renders opaque, the engine ignored the alpha — pass a pale solid tint.)
+WEIGHT x PATTERN (conviction; pattern is a native arg on every line tool)
+| Tier | style | meaning |
+|---|---|---|
+| Major | 2px solid | confirmed, 3+ touches, the decision level |
+| Standard | 1px solid | valid, 2 touches |
+| Speculative | 1px dashed | hypothesis, 1 touch, unconfirmed |
+| Projected | 1px dotted | future: targets, ray extensions, forecasts |
+Verticals/events: 1px dotted always. Computed tools (fib etc.): 1px solid.
+Max TWO marks at 2px per chart. Never 3px+ except one deliberate amber hero.
 
-WEIGHT & PATTERN HIERARCHY (conviction)
-| Tier | width | pattern | meaning |
-|---|---|---|---|
-| Major | 2px | solid | confirmed, 3+ touches, decision level |
-| Standard | 1px | solid | valid, 2 touches, secondary |
-| Speculative | 1px | dashed* | unconfirmed, 1 touch, hypothesis |
-| Projected | 1px | dotted* | extends into the future, targets, ray extension |
-| Verticals | 1px | dotted | events never compete with price |
+FILLS (fill_color + fill_opacity)
+Fill hue ALWAYS equals the border hue. Opacity budget: 0.10 zones/rectangles, 0.08
+channels and anything large, 0.15 absolute ceiling; volume profile gray at 0.25 (it must
+survive). Max 3 filled objects, only 1 large; total painted area under ~25% of the pane;
+fills never overlap each other. Fib fill: "transparent" (the engine's default wash is mud).
 
-* pattern is native only on draw_vertical. For dashed/dotted on any other line, use
-draw_raw with ptrn:"dashed"|"dotted" (same recipe as the line tool, plus the pattern field).
-- 2 elements at 2px max per chart. If everything is heavy, nothing reads as important.
-- Never 3px+ except a single deliberate hero element (rare — usually the amber invalidation).
+BUDGET (slot cost: line/label = 1, zone/channel/fib = 2, multi-line tool = 3)
+Max 8 slots (aim 5-6). Also: 3 horizontals, 3 texts, 2 verticals, 1 fib-family object,
+1 channel-or-pitchfork, 1 amber, 2 marks at 2px, 4 hues.
 
-PRIMITIVE SELECTION (line vs zone vs text)
-- Line vs zone: touches spread over > ~0.4% of price (or wicks pierce the level) ->
-  draw_rectangle ZONE spanning the wick extremes. Tight, exact level (round number,
-  prior close, measured target) -> single draw_support / horizontal line. A line implies
-  precision a fuzzy level does not have; a zone absorbs wick noise.
-- Segment vs ray: draw_trendline (segment) by default — it ends where the evidence ends.
-  draw_ray only to PROJECT a level forward, styled dotted (a forecast).
-- Channel: prefer one draw_channel over two trendlines. Max one channel per chart.
-- Fibonacci: only on the SINGLE dominant swing in view. Never stack fibs. The fib supplies
-  its own level lines — do not add horizontals around it (note confluence in a label).
-- Indicators: call list_indicators for exact keys, then add_indicator. Never hand-fake
-  an indicator with lines.
+Z-ORDER (creation order = paint order; draw bottom-up)
+volume profile -> zones/ellipses/channels -> fib family -> computed lines ->
+trendlines/rays/arrows -> horizontals/crosslines -> verticals -> text last.
 
-TEXT DISCIPLINE
-A label earns its place ONLY if it says something the geometry cannot: a level's price
-("186.50 support"), an event ("Q2 earnings"), a pattern ("H&S neckline"), an invalidation
-("invalid < 172"). NOT "resistance" on a red line above price (redundant).
-- draw_callout(boxed:false) = borderless annotation — the default. Use boxed:true only
-  when the label sits over dense candles.
-- 4 words / ~24 chars max. Numbers beat words. 3 text labels max per chart.
-- Anchor at the LEFT of the visible range — keep the last ~20% of bars text-free (that is
-  where live price is). Never place text within ~3 bars of the current candle.
+TEXT & LABELS
+- A pure price level never gets a text label: pass axis_label:true instead — it prints a
+  colored price badge on the axis, native-looking, zero canvas ink. Cap 2 axis labels,
+  decision levels only.
+- Text earns a place only saying what geometry cannot: "Q2 earnings", "H&S neckline",
+  "invalid < 172". Max 4 words, max 3 texts. Numbers beat words.
+- Prefer borderless: pass draw_callout boxed:false (the tool itself defaults to boxed).
+  Place text in EMPTY space, left half of the chart, never within ~3 bars of the last
+  candle. boxed:true only over dense candles: bg_color = own hue at ~0.15 alpha, border
+  1px same hue, text same hue.
+- Fonts: font_size 11 (12 for the single headline), font_weight normal (bold ONLY on the
+  amber flag). Never set font_family or font_style.
 
-COMPOSITION (the core) — element budget & z-order
-| element | cap |
-|---|---|
-| total drawn elements | 8 (6 is the sweet spot) |
-| filled areas (zones + channels + fib) | 3, only 1 "large" |
-| horizontals | 3 |
-| text | 3 |
-| verticals | 2 |
-| amber | 1 |
-| fibs | 1 |
-| distinct hues (excl. gray) | 4 |
-| elements at 2px | 2 |
+FIBONACCI (one per chart, on the single dominant swing)
+draw_fib color #9B51E0, line_width 1, fill_color "transparent", show_labels true,
+levels [0, 0.382, 0.5, 0.618, 1]. Add 1.272 and 1.618 only when projecting targets;
+0.236/0.786 only if asked. Never add horizontals at fib levels (note confluence in text).
+Never stack two fib-family objects.
 
-Draw in this order (ChartIQ paints in creation order; later = on top):
-rectangles/channels -> fibonacci -> trendlines/rays -> horizontals -> verticals -> text.
+FINAL CHECK (before you report done)
+each mark's job in 5 words? -> weakest mark deletable without changing the read? ->
+two marks saying one thing? merge -> last 15% of bars unobstructed? -> a novice can
+answer in 3 seconds: where is the floor, the ceiling, which way is it leaning?
 
-Collision rules:
-- Two horizontals within 0.4% of each other -> merge into ONE zone. Never near-duplicates.
-- A fib level coinciding with an S/R line (+/-0.3%) -> drop the line, keep the fib, note confluence.
-- Green and red zones must not overlap (overlapping thesis = no thesis — pick one).
-- Two FILLS overlapping read as mud — trendlines crossing a zone are fine, stacked fills are not.
-- Total filled area <= ~25% of the pane. Keep the last ~10 candles unobstructed.
+QUICK DEFAULTS (paste-ready)
+    support / resistance  draw_support  #089981 / #F23645, 2px solid major / 1px dashed minor; axis_label on the decision level
+    demand / supply zone  draw_rectangle  same hue, line_width 1, fill_opacity 0.10
+    trendline             draw_trendline  #2962FF 2px (green up / red down only if direction IS the thesis)
+    projection            draw_ray        parent hue, 1px dotted
+    channel               draw_channel    #2962FF 1px, fill_opacity 0.08
+    fibonacci             draw_fib        #9B51E0 1px, fill transparent, levels [0,0.382,0.5,0.618,1]
+    event                 draw_vertical   #787B86 1px dotted
+    attention             any             #FF9800, max one, may be 2px + bold label
+    label                 draw_callout(boxed:false)  parent hue, font_size 11, <=4 words, left-anchored
+    indicators            muted, width 1: gold #E8A838 / sky #56B4E9 / pink #F06292 / slate #9598A1
 
-"Less is more" checklist — run before finishing:
-1. Can I state each element's job in <= 5 words? If not, delete it.
-2. Would deleting the weakest mark change the read? If no, delete it.
-3. Two marks saying the same thing? Merge.
-4. Is the most recent price action unobstructed?
-5. <= 2 heavy (2px), <= 4 hues, <= 3 texts?
-6. Could a novice, in 3 seconds, answer "where is the floor, where is the ceiling, which
-   way is it leaning?" That is the whole test.
+For worked recipes, zone geometry, the selection matrix and collision rules:
+get_drawing_guide(detail:"recipes"). For long-tail tools (gann/pitchfork/profile/harmonics/
+regression) and indicator coloring: get_drawing_guide(detail:"advanced"). Skip both for a
+one-line "draw support at X".`;
 
-QUICK-REFERENCE (paste-ready defaults)
-    support line     draw_support     #089981  2px solid (major) / 1px dashed* (minor)
-    resistance line  draw_support     #F23645  2px solid (major) / 1px dashed* (minor)
-    demand zone      draw_rectangle   color #089981 lw 1, fill_color #0899811A
-    supply zone      draw_rectangle   color #F23645 lw 1, fill_color #F236451A
-    trendline        draw_trendline   #2962FF 2px (or #089981 up / #F23645 down if directional)
-    projection       draw_ray         same hue, 1px dotted*
-    channel          draw_channel     #2962FF lw 1, fill_color #2962FF14
-    fibonacci        draw_fib         #9B51E0 (only color it ever gets)
-    event marker     draw_vertical    #787B86 lw 1 pattern dotted
-    attention/invalid  any            #FF9800 (max one per chart)
-    label            draw_callout(boxed:false)  parent hue or #787B86; <=4 words; left-anchored
-    z-order          zones -> fib -> trendlines -> horizontals -> verticals -> text
-    budget           <=8 elements, <=3 fills, <=3 texts, <=4 hues, <=2 heavy
-    * dashed/dotted on non-vertical lines -> use draw_raw with ptrn
+export const GUIDE_RECIPES = `Tratto — Recipes, Selection Matrix & Collision Rules
 
-For worked recipes (key S/R, trend+channel, fib a swing, annotate an earnings gap), the
-full primitive-selection matrix, and tool gotchas (date snapping, verified removal, async
-reloads, zone geometry, corporate events), call get_drawing_guide again with detail:"recipes".
-Do not fetch it for a one-line "draw support at X".`;
-
-export const GUIDE_RECIPES = `Tratto — Recipes, Selection Matrix & Tool Gotchas
-
-Use this when a request is non-trivial (multiple overlays, a full markup) or when you hit a
-tool quirk. For a one-line "draw support at X", the core guide is enough.
+Use this for a non-trivial markup (multiple overlays). For a one-line "draw support at X",
+the core guide is enough. (Long-tail tools and indicator styling live in detail:"advanced".)
 
 FULL PRIMITIVE-SELECTION MATRIX
 | Scenario | Use | Not | Why |
@@ -154,68 +130,125 @@ FULL PRIMITIVE-SELECTION MATRIX
 | Same, but you want to project it forward | ray | segment | extension = explicit forecast; style dotted |
 | Price oscillating between two parallel bounds | channel | 2 trendlines | one object, one fill, half the clutter |
 | Pullback targets after a clear impulse swing | fibonacci | hand-drawn 38/50/62 lines | auto levels are exact and engine-labeled |
-| Dated event (earnings, split, Fed, news) | vertical, dotted | floating callout | time markers belong to the time axis |
-| A word/number the chart cannot say ("Neckline", "3rd test") | annotation (borderless) | callout box | boxes are heavy; default borderless |
-| Label that must survive over busy candles | callout (boxed) | annotation | use the box only when the background is noisy |
-| RSI / MACD / BB / MA | engine study (add_indicator) | redrawing with lines | never hand-fake an indicator |
+| A region that is an episode in TIME (blow-off, squeeze, accumulation) | ellipse | rectangle | rectangle = price claim, ellipse = an event; fill_opacity 0.08 |
+| "How far / how long was that move?" | draw_measurement | trendline + callout | it computes and labels itself; keep it gray |
+| Directional emphasis into a target | draw_arrow | trendline | max one, usually the amber; arrowhead fill = line color |
+| One exact (price, time) pivot | draw_crossline | support + vertical pair | gray dotted 1px, one object |
+| Where did volume concentrate | draw_volume_profile | hand-drawn zones | gray, fill_opacity 0.25, counts as your one large fill |
+| Trend "fair value" + deviation | draw_regression_line / draw_average_line | freehand channel | purple 1px, ONE band, dotted same hue |
+| Dated event (earnings, split, Fed) | vertical, dotted | floating callout | time markers belong to the time axis |
+| A word/number the chart cannot say | draw_callout(boxed:false) | callout box | boxes are heavy; default borderless |
+| RSI / MACD / BB / MA | add_indicator | redrawing with lines | never hand-fake an indicator (see detail:"advanced") |
 
-Novice tells to avoid: everything drawn as infinite rays shooting off-screen; three
-overlapping fibs (confetti); a line for every wick instead of one zone; paragraphs of text
-on the canvas; rainbow hues where every tool is used exactly once.
+Novice tells to avoid: everything drawn as infinite rays off-screen; three overlapping fibs
+(confetti); a line for every wick instead of one zone; paragraphs of text on the canvas;
+rainbow hues where every tool is used exactly once.
 
-ZONE GEOMETRY (how to build a rectangle zone well)
-- Height: span the wick extremes of the touches. Aim 0.5-1.5% of price. > 3% tall means
-  it is a range, not a level — reconsider.
-- Left edge: the first touch (date1). Right edge: extend ~5% of the visible bars PAST the
-  last bar (date2 a few bars into the future) so it reads as still live.
-- Border line_width 1, fill_color at ~10% alpha, same hue as border.
+ZONE GEOMETRY (building a rectangle zone well)
+- Height: span the wick extremes of the touches. Aim 0.5-1.5% of price. >3% tall means it
+  is a range, not a level — reconsider.
+- Left edge: the first touch (date1). Right edge: extend a few bars PAST the last bar
+  (date2 into the future) so it reads as still live.
+- Border line_width 1, fill_color = same hue as border, fill_opacity 0.10.
 
 WORKED RECIPES
 
 A — "Mark the key support/resistance"
 1. Cluster swing highs/lows. Tight cluster -> line; dispersed -> zone.
-2. Support zone: draw_rectangle border #089981, fill_color #0899811A, spanning wick
-   extremes, right edge past the last bar.
-3. Resistance (3 tight touches): draw_support #F23645, 2px solid.
-4. Secondary minor support below: horizontal #089981, 1px dashed (via draw_raw).
-5. One label, left edge, above resistance: draw_callout(boxed:false, "192.40 - 3rd test", #F23645).
--> 4 elements, 2 hues. Floor/ceiling read in one glance.
+2. Support zone: draw_rectangle border #089981, fill_color #089981, fill_opacity 0.10,
+   spanning wick extremes, right edge past the last bar.
+3. Resistance (3 tight touches): draw_support #F23645, 2px solid, axis_label:true.
+4. Secondary minor support below: draw_support #089981, 1px, pattern:"dashed".
+5. One label, left edge: draw_callout(boxed:false, "3rd test", color #F23645). The price
+   already shows on the axis badge — the label says only what the number cannot.
+-> 4 marks, 2 hues. Floor/ceiling read in one glance.
 
 B — "Draw the trend + channel"
-1. draw_channel from the two anchor lows: #2962FF lw 1, fill_color #2962FF14.
-2. Projecting? draw_ray along the lower bound, #2962FF 1px dotted (via draw_raw) — the
-   forecast visibly differs from the evidence.
-3. A real horizontal support inside the channel: #089981 1px solid.
+1. draw_channel from the two anchor lows: #2962FF line_width 1, fill_opacity 0.08.
+2. Projecting? draw_ray along the lower bound, #2962FF 1px, pattern:"dotted" — the forecast
+   visibly differs from the evidence.
+3. A real horizontal support inside the channel: draw_support #089981 1px solid.
 4. Optional label at the channel's left end: "Uptrend since Mar", #2962FF.
 -> Never also draw separate trendlines on the same swing — the channel already contains them.
 
 C — "Fib the last swing"
-1. One draw_fib only, low->high (uptrend pullback), color #9B51E0.
-2. Confluence: if 61.8% sits on prior structure, do not add a horizontal — add one label at
-   the level, left-anchored: "61.8 = prior high", #9B51E0.
-3. Optional invalidation: draw_support #FF9800 2px below 78.6% + label "invalid < 168.20".
-   (Spends the chart's single amber.)
--> 2-3 elements. Adding lines around a fib is the fastest way to clutter.
+1. One draw_fib only, low->high (uptrend pullback): color #9B51E0, line_width 1,
+   fill_color "transparent", levels [0, 0.382, 0.5, 0.618, 1].
+2. Confluence: if 61.8% sits on prior structure, do not add a horizontal — add one label
+   at the level, left-anchored: "61.8 = prior high", #9B51E0.
+3. Golden-pocket emphasis: add ONE draw_rectangle over 0.5-0.618, #9B51E0 border 1px,
+   fill_opacity 0.08 — never more fib ink.
+-> 2-3 marks. Adding lines around a fib is the fastest way to clutter.
 
 D — "Annotate the earnings gap"
-1. draw_vertical at the earnings date: #787B86, lw 1, pattern:"dotted".
+1. draw_vertical at the earnings date: #787B86, line_width 1, pattern:"dotted".
 2. Gap zone: draw_rectangle from pre-gap close to post-gap open, gap day -> a few bars past
-   last bar. Gap-up (support): green border + #0899811A fill; gap-down: red. If the point is
-   "unfilled gap = magnet", use amber #FF9800 / #FF98001A.
+   last bar. Gap-up (support): green border + fill_opacity 0.10; gap-down: red. If the point
+   is "unfilled gap = magnet", spend the chart's single amber (#FF9800).
 3. One label at top of pane on the vertical's date: "Q2 earnings +8.4%", #787B86.
--> 3 elements; the gap zone doubles as a live S/R zone going forward.
+-> 3 marks; the gap zone doubles as a live S/R zone going forward.
 
-TOOL GOTCHAS (digest — full operational detail arrives in each tool's result/error payload)
+COLLISION RULES
+- Two horizontals within 0.4% of each other -> merge into ONE zone. Never near-duplicates.
+- A fib level coinciding with an S/R line (+/-0.3%) -> drop the line, keep the fib, note
+  confluence in text.
+- Green and red zones must not overlap (overlapping thesis = no thesis — pick one).
+- Two FILLS overlapping read as mud; trendlines crossing a zone are fine, stacked fills are not.
+- One fib-family object per chart, ever. Channel and pitchfork are mutually exclusive.
+- Multi-line computed tools (gann fan, speed lines, quadrant, tirone, time cycle, fib
+  fan/arc/timezone) cost 3 slots and are ALONE-tools: never two together, and keep the rest
+  of the chart to 2-3 simple marks.
+- A study line (MA/BB) already tracking a trendline's path -> drop the trendline, keep the
+  study, note it in text.
+- Total filled area <= ~25% of the pane. Keep the last ~10 candles unobstructed.`;
+
+export const GUIDE_ADVANCED = `Tratto — Long-tail Tools, Indicator Styling & Engine Gotchas
+
+Fetch this only when using an exotic tool, styling an indicator, or hitting a tool quirk.
+
+EXOTIC-TOOL ETIQUETTE (the by-name rule)
+Gann fan, speed arc/line, time cycle, quadrant, tirone, fib arc/fan/timezone, Gartley,
+pitchfork: these are opinionated frameworks — draw them ONLY when the user asks by name,
+never proactively. All: line_width 1, single hue, cost 3 slots, and stand alone with at
+most 2-3 simple supporting marks. Where a shape is filled (gann/speed/time cycle/gartley/
+fib arc-fan-timezone), keep fill_opacity <= 0.05 or fill_color "transparent" (pitchfork
+has no fill).
+- All computed constructions: #9B51E0 purple (fib family, regression, average, quadrant,
+  tirone, gann, speed, time cycle).
+- Pitchfork and Gartley are analyst-placed PATTERN claims, not math: #2962FF blue
+  (Gartley fill_opacity 0.05). draw_pitchfork REPLACES a channel (never both); 3 anchors required.
+- draw_time_cycle / draw_fib_timezone print repeating verticals — only on a chart with
+  <= 1 other drawing, or they become a picket fence.
+- draw_volume_profile: gray fill at fill_opacity 0.25; set the range to the consolidation you
+  are analyzing, NOT the whole chart. It IS your one large fill.
+- Range tools (draw_quadrant_lines, draw_tirone_levels, draw_average_line, draw_regression_line)
+  take two DATES; price levels are computed from the data in that window. On regression/average,
+  enable at most ONE deviation band: { color: same purple, pattern:"dotted", line_width:1 }.
+
+INDICATOR STYLING (context voice — never the semantic drawing palette)
+Studies must whisper so they can never be mistaken for a support/resistance CLAIM: width 1,
+muted colors only. Study palette:
+  gold #E8A838 (fast/short), sky #56B4E9 (slow/long), pink #F06292 (third line),
+  slate #9598A1 (bands / median / context).
+- Moving averages: MA20 gold, MA50 sky, MA200 slate — outputs { color, width:1 }. Max 3 MAs.
+- Bollinger Bands: all three outputs slate #9598A1; keep the engine's Channel Fill.
+- Own-panel oscillators (RSI, MACD): main line sky, signal gold, histogram engine default.
+- Get exact output KEYS from list_indicators before setting outputs — MACD/Bollinger keys
+  are multi-word ("Bollinger Bands Top", "MACD", "Signal"); never guess them.
+- Never redraw an indicator with line tools; never recolor a study green/red/amber (those
+  hues are reserved for drawing claims).
+
+ENGINE GOTCHAS (digest — full operational detail arrives in each tool's result/error payload)
 - Dates snap to the nearest loaded bar (echoed in snapped.{date1,date2}); dates BEFORE the
   earliest loaded bar are REJECTED — set_range wider first. Dates after the last bar are OK
-  (that is how you project/extend right).
-- Dashed/dotted is native only on draw_vertical; for any other line use draw_raw with the same
-  params plus ptrn:"dashed"|"dotted" (fields: col,lw,ptrn,v0,v1,d0,d1).
+  (that is how you project/extend to the right).
+- fill_opacity has no separate engine field: it is baked into fill_color as an rgba alpha
+  for you. Passing fill_color "transparent" turns a fill off cleanly.
 - Removal is verified by re-read, not by thrown errors — trust the removed/remaining counts.
   Prefer clear_drawings(scope:"mine") over "all".
 - Async reloads (set_periodicity / set_range / add_comparison) rebuild the dataset and
   INVALIDATE date anchors — re-read_drawings before adding more marks. add_comparison also
   switches the y-axis to a PERCENT scale (do not mix price-level horizontals with it).
 - get_corporate_events needs DAILY-or-larger periodicity, or it returns 0.
-- draw_raw discovery: hand-draw an exotic tool (pitchfork, gann, volume-profile) once on
+- draw_raw is the escape hatch for anything without a dedicated tool: hand-draw it once on
   Yahoo, then read_drawings to harvest its exact serialized params.`;

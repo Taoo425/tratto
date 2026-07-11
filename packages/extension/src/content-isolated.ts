@@ -43,6 +43,7 @@ const STORE_PREFIX = "ynf:draw:";
 
 /** Drawing tools we register for persistence (their request is replayed on reload). */
 const DRAW_TOOLS = new Set([
+  // 007 original family
   "draw_support",
   "draw_trendline",
   "draw_fib",
@@ -52,6 +53,30 @@ const DRAW_TOOLS = new Set([
   "draw_vertical",
   "draw_callout",
   "draw_raw",
+  // MCP style expansion — fib family (Section 2)
+  "draw_fib_arc",
+  "draw_fib_fan",
+  "draw_fib_projection",
+  "draw_fib_timezone",
+  // MCP style expansion — 2/3-point line & shape tools (Section 3)
+  "draw_crossline",
+  "draw_line",
+  "draw_arrow",
+  "draw_ellipse",
+  "draw_pitchfork",
+  "draw_gann_fan",
+  "draw_speed_arc",
+  "draw_speed_line",
+  "draw_time_cycle",
+  "draw_measurement",
+  // MCP style expansion — range-anchored tools (Section 3)
+  "draw_volume_profile",
+  "draw_quadrant_lines",
+  "draw_tirone_levels",
+  "draw_average_line",
+  "draw_regression_line",
+  // MCP style expansion — harmonic pattern (Section 3)
+  "draw_gartley",
 ]);
 
 /** Tools this world handles itself (drawing + removal + saved-store management). */

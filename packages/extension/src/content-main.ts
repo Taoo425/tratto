@@ -22,10 +22,6 @@ import type {
   PricePoint,
   DrawSupportParams,
   DrawSupportResult,
-  DrawTrendlineParams,
-  DrawTrendlineResult,
-  DrawFibParams,
-  DrawFibResult,
   FriendlyDrawing,
   ReadDrawingsResult,
   GetCapabilitiesResult,
@@ -33,6 +29,11 @@ import type {
   DrawTwoPointParams,
   DrawVerticalParams,
   DrawCalloutParams,
+  DrawCrosslineParams,
+  DrawThreePointParams,
+  DrawBand,
+  DrawRangeParams,
+  DrawGartleyParams,
   DrawRawParams,
   DrawResult,
   DrawingMatch,
@@ -927,42 +928,22 @@ function handleDrawSupport(id: string, params: DrawSupportParams): ToolResponse 
 
   const usedColor = params.color ?? "auto";
   const usedLineWidth = params.line_width && params.line_width > 0 ? params.line_width : 1;
-  const panelName = stx.chart?.panel?.name ?? "chart";
 
   // Verified recipe (002, tested live): serialized keys (col/lw/ptrn), a real
   // d0 time anchor, and pnl so ChartIQ's reconstruct() binds+adjusts it. See
   // CLAUDE.md for why d0 + panelName/adjust are non-negotiable.
-  const drawing = stx.createDrawing("horizontal", {
-    pnl: panelName,
+  const createParams: Record<string, unknown> = {
     v0: price,
     d0,
     col: usedColor,
     lw: usedLineWidth,
-    ptrn: "solid",
-  });
-  if (typeof drawing.adjust === "function") {
-    drawing.panelName ??= panelName;
-    drawing.adjust();
-  }
-  stx.draw?.();
-
-  const exported = stx.exportDrawings();
-  const mineRaw = exported.find((dobj) => dobj["name"] === "horizontal" && dobj["v0"] === price);
-  const drawn: FriendlyDrawing = {
-    type: "horizontal",
-    price,
-    color: usedColor,
-    line_width: usedLineWidth,
-    pattern: "solid",
-    raw: mineRaw ?? { name: "horizontal", v0: price, col: usedColor, lw: usedLineWidth, ptrn: "solid" },
+    ptrn: params.pattern ?? "solid",
   };
+  if (typeof params.axis_label === "boolean") createParams.al = params.axis_label;
 
-  const result: DrawSupportResult = {
-    symbol,
-    drawn,
-    total_drawings: exported.length,
-    fingerprint: fingerprintOf(mineRaw, "horizontal"),
-  };
+  const fin = finishDrawing(stx, "horizontal", createParams, { id, symbol });
+  if ("error" in fin) return fin.error;
+  const result: DrawSupportResult = fin.result;
   const hint = viewHint(symbol);
   if (hint !== undefined) result.view_hint = hint;
   return { id, ok: true, symbol, data: result };
@@ -1026,94 +1007,60 @@ function snapToNearestBar(dataSet: unknown[], input: string): SnapResult | { err
   return { ciqDate, isoDate: extractDate(bestRow) };
 }
 
-function handleDrawTrendline(id: string, params: DrawTrendlineParams): ToolResponse {
-  const r = resolveEngine();
-  if (!r.engine) return makeError(id, r.error_code, r.message, r.symbol, r.hint);
-  const stx = r.engine;
-  const symbol = r.symbol;
+/**
+ * Fib levels are FRACTIONS (not percents). ChartIQ's default fib config is the full
+ * 17-level ladder with only 9 marked shown (`d:true`) — verified live on Yahoo:
+ * createDrawing('fibonacci') with no `p` exports exactly this ladder + shown-set. We
+ * reproduce it as the default so an unstyled draw_fib is identical to a hand-drawn
+ * one, while the other 8 levels stay in the config (toggleable later).
+ * NOTE: `p.fibs` MUST be present and non-empty — ChartIQ's reconstruct() iterates it
+ * unconditionally, so omitting it throws "parameters.fibs is not iterable".
+ */
+const FIB_LADDER = [
+  -0.786, -0.618, -0.5, -0.382, -0.236, 0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.272, 1.382, 1.618, 2.618, 4.236,
+];
+const FIB_DEFAULT_SHOWN = new Set([-0.618, -0.382, 0, 0.382, 0.5, 0.618, 1, 1.382, 1.618]);
 
-  const { date1, price1, date2, price2 } = params;
-  if (typeof price1 !== "number" || !Number.isFinite(price1)) {
-    return makeError(id, "BAD_REQUEST", "price1 must be a finite number", symbol);
-  }
-  if (typeof price2 !== "number" || !Number.isFinite(price2)) {
-    return makeError(id, "BAD_REQUEST", "price2 must be a finite number", symbol);
-  }
-  if (typeof date1 !== "string" || !date1) {
-    return makeError(id, "BAD_REQUEST", "date1 is required", symbol);
-  }
-  if (typeof date2 !== "string" || !date2) {
-    return makeError(id, "BAD_REQUEST", "date2 is required", symbol);
-  }
-  if (typeof stx.createDrawing !== "function" || typeof stx.exportDrawings !== "function") {
-    return makeError(id, "ENGINE_NOT_FOUND", "ChartIQ drawing API unavailable on this engine", symbol);
-  }
-
-  const dataSet = stx.chart?.dataSet;
-  if (!Array.isArray(dataSet) || dataSet.length === 0) {
-    return makeError(id, "DATA_NOT_READY", "engine has no dataSet loaded yet", symbol);
-  }
-
-  const snap1 = snapToNearestBar(dataSet, date1);
-  if ("error" in snap1) return makeError(id, "BAD_REQUEST", snap1.error, symbol);
-  const snap2 = snapToNearestBar(dataSet, date2);
-  if ("error" in snap2) return makeError(id, "BAD_REQUEST", snap2.error, symbol);
-
-  const usedColor = params.color ?? "auto";
-  const usedLineWidth = params.line_width && params.line_width > 0 ? params.line_width : 1;
-  const panelName = stx.chart?.panel?.name ?? "chart";
-
-  const drawing = stx.createDrawing("segment", {
-    pnl: panelName,
-    d0: snap1.ciqDate,
-    v0: price1,
-    d1: snap2.ciqDate,
-    v1: price2,
-    col: usedColor,
-    lw: usedLineWidth,
-    ptrn: "solid",
-  });
-  if (typeof drawing.adjust === "function") {
-    drawing.panelName ??= panelName;
-    drawing.adjust();
-  }
-  stx.draw?.();
-
-  const exported = stx.exportDrawings();
-  const mineRaw = exported.find(
-    (dobj) => dobj["name"] === "segment" && dobj["v0"] === price1 && dobj["v1"] === price2,
-  );
-  const drawn: FriendlyDrawing = {
-    type: "segment",
-    price: null,
-    color: usedColor,
-    line_width: usedLineWidth,
-    pattern: "solid",
-    raw: mineRaw ?? {
-      name: "segment",
-      v0: price1,
-      d0: snap1.ciqDate,
-      v1: price2,
-      d1: snap2.ciqDate,
-      col: usedColor,
-      lw: usedLineWidth,
-      ptrn: "solid",
-    },
+/**
+ * Build the nested `p` config object shared by the whole fib family
+ * (fibonacci/fibarc/fibfan/fibprojection/fibtimezone). Field names confirmed on
+ * live Yahoo (docs/chartiq-style-params.md Layer 3): `p.e` extendLeft, `p.pl`
+ * printLevels, `p.pv` printValues, `p.t` trend-line style, `p.fibs[]` per-level
+ * `{c,l,d,p{lw,o,pt}}` where `l` is a FRACTION and top-level lw/ptrn do NOT
+ * cascade to the levels — each level carries its own style.
+ */
+function buildFibParams(params: DrawFibFamilyParams): Record<string, unknown> {
+  const lw = params.line_width && params.line_width > 0 ? params.line_width : 1;
+  const pt = params.pattern ?? "solid";
+  const trendColor = params.color ?? "auto";
+  const levelColor = params.level_color ?? "auto";
+  const lineStyle = { c: trendColor, p: { lw, o: 1, pt } };
+  // `fibs` is ALWAYS emitted — the engine iterates it unconditionally (a missing
+  // `fibs` throws "parameters.fibs is not iterable"). With no explicit `levels` we
+  // reproduce ChartIQ's default: the full 17-level ladder with only the standard 9
+  // shown (verified live to match a no-`p` hand-drawn fib). An explicit `levels`
+  // list shows exactly those.
+  const explicitLevels = Array.isArray(params.levels) && params.levels.length > 0;
+  const fibs = explicitLevels
+    ? (params.levels as number[]).map((l) => ({ c: levelColor, l, d: true, p: { lw, o: 1, pt } }))
+    : FIB_LADDER.map((l) => ({ c: levelColor, l, d: FIB_DEFAULT_SHOWN.has(l), p: { lw, o: 1, pt } }));
+  return {
+    e: params.extend_left ?? false,
+    pl: params.show_labels ?? true,
+    pv: params.show_prices ?? false,
+    t: lineStyle,
+    tz: lineStyle, // fib-timezone reads p.tz; harmless for the other fib types
+    fibs,
   };
-
-  const result: DrawTrendlineResult = {
-    symbol,
-    drawn,
-    total_drawings: exported.length,
-    fingerprint: fingerprintOf(mineRaw, "segment"),
-    snapped: { date1: snap1.isoDate, date2: snap2.isoDate },
-  };
-  const hint = viewHint(symbol);
-  if (hint !== undefined) result.view_hint = hint;
-  return { id, ok: true, symbol, data: result };
 }
 
-function handleDrawFib(id: string, params: DrawFibParams): ToolResponse {
+/**
+ * Fibonacci family. All share the nested `p` object above. Anchor shapes vary:
+ * fibonacci/fibtimezone = 2 points (v0/d0, v1/d1); fibarc/fibfan = 3 points but
+ * the 3rd is an offset PRICE only (v2, no date); fibprojection = 3 full points
+ * (v2/d2). Snaps every provided date.
+ */
+function handleDrawFibFamily(id: string, ciqName: string, params: DrawFibFamilyParams): ToolResponse {
   const r = resolveEngine();
   if (!r.engine) return makeError(id, r.error_code, r.message, r.symbol, r.hint);
   const stx = r.engine;
@@ -1132,66 +1079,50 @@ function handleDrawFib(id: string, params: DrawFibParams): ToolResponse {
   if (typeof date2 !== "string" || !date2) {
     return makeError(id, "BAD_REQUEST", "date2 is required", symbol);
   }
-  if (typeof stx.createDrawing !== "function" || typeof stx.exportDrawings !== "function") {
-    return makeError(id, "ENGINE_NOT_FOUND", "ChartIQ drawing API unavailable on this engine", symbol);
+
+  const needsThirdPrice = ciqName === "fibarc" || ciqName === "fibfan" || ciqName === "fibprojection";
+  const needsThirdDate = ciqName === "fibprojection";
+  if (needsThirdPrice && (typeof params.price3 !== "number" || !Number.isFinite(params.price3))) {
+    return makeError(id, "BAD_REQUEST", `price3 is required for ${ciqName}`, symbol);
+  }
+  if (needsThirdDate && (typeof params.date3 !== "string" || !params.date3)) {
+    return makeError(id, "BAD_REQUEST", `date3 is required for ${ciqName}`, symbol);
   }
 
   const dataSet = stx.chart?.dataSet;
   if (!Array.isArray(dataSet) || dataSet.length === 0) {
     return makeError(id, "DATA_NOT_READY", "engine has no dataSet loaded yet", symbol);
   }
-
   const snap1 = snapToNearestBar(dataSet, date1);
   if ("error" in snap1) return makeError(id, "BAD_REQUEST", snap1.error, symbol);
   const snap2 = snapToNearestBar(dataSet, date2);
   if ("error" in snap2) return makeError(id, "BAD_REQUEST", snap2.error, symbol);
+  let snap3: SnapResult | null = null;
+  if (needsThirdDate) {
+    const s3 = snapToNearestBar(dataSet, params.date3 as string);
+    if ("error" in s3) return makeError(id, "BAD_REQUEST", s3.error, symbol);
+    snap3 = s3;
+  }
 
   const usedColor = params.color ?? "auto";
-  const panelName = stx.chart?.panel?.name ?? "chart";
-
-  const drawing = stx.createDrawing("fibonacci", {
-    pnl: panelName,
+  const createParams: Record<string, unknown> = {
     col: usedColor,
-    fc: usedColor,
     d0: snap1.ciqDate,
     v0: price1,
     d1: snap2.ciqDate,
     v1: price2,
-  });
-  if (typeof drawing.adjust === "function") {
-    drawing.panelName ??= panelName;
-    drawing.adjust();
-  }
-  stx.draw?.();
-
-  const exported = stx.exportDrawings();
-  const mineRaw = exported.find(
-    (dobj) => dobj["name"] === "fibonacci" && dobj["v0"] === price1 && dobj["v1"] === price2,
-  );
-  const drawn: FriendlyDrawing = {
-    type: "fibonacci",
-    price: null,
-    color: usedColor,
-    line_width: null,
-    pattern: null,
-    raw: mineRaw ?? {
-      name: "fibonacci",
-      v0: price1,
-      d0: snap1.ciqDate,
-      v1: price2,
-      d1: snap2.ciqDate,
-      col: usedColor,
-      fc: usedColor,
-    },
+    p: buildFibParams(params),
   };
+  const fc = fillColorField(params);
+  if (fc !== undefined) createParams.fc = fc;
+  else if (ciqName === "fibonacci") createParams.fc = usedColor; // legacy draw_fib default: fc mirrored col
+  if (needsThirdPrice) createParams.v2 = params.price3;
+  if (snap3) createParams.d2 = snap3.ciqDate;
 
-  const result: DrawFibResult = {
-    symbol,
-    drawn,
-    total_drawings: exported.length,
-    fingerprint: fingerprintOf(mineRaw, "fibonacci"),
-    snapped: { date1: snap1.isoDate, date2: snap2.isoDate },
-  };
+  const fin = finishDrawing(stx, ciqName, createParams, { id, symbol });
+  if ("error" in fin) return fin.error;
+  const result = fin.result;
+  result.snapped = { date1: snap1.isoDate, date2: snap2.isoDate };
   const hint = viewHint(symbol);
   if (hint !== undefined) result.view_hint = hint;
   return { id, ok: true, symbol, data: result };
@@ -1227,8 +1158,182 @@ function fingerprintOf(raw: Record<string, unknown> | undefined, name: string): 
   return m;
 }
 
-/** Generic two-point drawings sharing the segment recipe: ray / rectangle / channel. */
-function handleDrawTwoPoint(id: string, ciqName: string, params: DrawTwoPointParams): ToolResponse {
+// --- Style-expansion helpers (MCP style surface) ---------------------------
+
+/**
+ * Optional style args shared by the draw handlers below. Intentionally
+ * content-main-internal: `DrawFibFamilyParams` (immediately below) is a
+ * single unified shape covering all five fib tools (fibonacci/fibarc/fibfan/
+ * fibprojection/fibtimezone), which has no one-to-one match in protocol.ts —
+ * the shared `FibStyleParams` family splits that surface into
+ * `DrawFibThreePointParams` / `DrawFibTimezoneParams` and doesn't carry
+ * `fill_opacity`. All fields optional; engine defaults hold when omitted.
+ */
+interface StyleArgs {
+  color?: string;
+  line_width?: number;
+  pattern?: string;
+  axis_label?: boolean;
+  span_panels?: boolean;
+  fill_color?: string;
+  fill_opacity?: number;
+  // callout fonts / box
+  border_color?: string;
+  bg_color?: string;
+  font_size?: number;
+  font_weight?: string;
+  font_style?: string;
+  font_family?: string;
+}
+
+/** Fibonacci family (fibonacci/fibarc/fibfan/fibprojection/fibtimezone). */
+interface DrawFibFamilyParams extends StyleArgs {
+  date1: string;
+  price1: number;
+  date2: string;
+  price2: number;
+  /** third date — only fibprojection uses a dated third point */
+  date3?: string;
+  /** third price — arc/fan use it as an offset/radius, projection as a price */
+  price3?: number;
+  levels?: number[];
+  level_color?: string;
+  show_labels?: boolean;
+  show_prices?: boolean;
+  extend_left?: boolean;
+}
+
+/**
+ * Convert a hex/named color + 0..1 opacity into an "rgba(r,g,b,a)" string.
+ * If the color is already rgb()/rgba(), its alpha is overridden. Named colors
+ * are resolved via a throwaway canvas context (browser only); on failure the
+ * original color string is returned unchanged.
+ */
+function rgbaFrom(color: string, opacity: number): string {
+  const a = Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1;
+  const c = String(color).trim();
+
+  // Already rgb()/rgba() → keep channels, override alpha.
+  const rgbMatch = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*[\d.]+\s*)?\)$/i.exec(c);
+  if (rgbMatch) return `rgba(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]}, ${a})`;
+
+  // Hex #rgb / #rrggbb / #rrggbbaa.
+  if (c.startsWith("#")) {
+    let hex = c.slice(1);
+    if (/^[0-9a-fA-F]+$/.test(hex)) {
+      if (hex.length === 3) hex = hex.split("").map((ch) => ch + ch).join("");
+      if (hex.length === 6 || hex.length === 8) {
+        const r = parseInt(hex.slice(0, 2), 16);
+        const g = parseInt(hex.slice(2, 4), 16);
+        const b = parseInt(hex.slice(4, 6), 16);
+        return `rgba(${r}, ${g}, ${b}, ${a})`;
+      }
+    }
+  }
+
+  // Named color → normalize via canvas, then re-run through the hex/rgb paths.
+  // Validity is detected with TWO sentinels: an INVALID color leaves fillStyle at
+  // whatever sentinel preceded it, so the readback differs between sentinels. A
+  // VALID color resolves identically regardless of the prior value. (Comparing the
+  // readback to the input `c` — the old check — wrongly treated a typo'd name as
+  // valid and rendered it black.)
+  try {
+    const ctx = document.createElement("canvas").getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#000000";
+      ctx.fillStyle = c;
+      const under0 = ctx.fillStyle;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillStyle = c;
+      const under1 = ctx.fillStyle;
+      if (under0 === under1 && under0 !== c) return rgbaFrom(under0, a);
+    }
+  } catch {
+    /* no DOM/canvas (e.g. non-browser) — fall through */
+  }
+  return c;
+}
+
+/** Result of {@link finishDrawing}: either the built core result, or an error response. */
+type FinishResult = { result: DrawResult } | { error: ToolResponse };
+
+/**
+ * The uniform tail every draw handler shares: create the drawing, bind its
+ * panel + adjust() (both non-negotiable — see CLAUDE.md 002: without a real d0
+ * anchor and panelName+adjust the line exists in the array but never renders),
+ * draw(), re-export, verify the count grew, and build a DrawResult with a value
+ * fingerprint. Callers assemble createParams (geometry + serialized style) and
+ * add snapped/view_hint to the returned result. createDrawing/adjust throws are
+ * intentionally NOT caught here so they bubble to route() as INTERNAL, matching
+ * pre-refactor behavior; handlers that need a softer code (e.g. gartley bad
+ * geometry) wrap the call themselves.
+ */
+function finishDrawing(
+  stx: ChartIqEngine,
+  ciqName: string,
+  createParams: Record<string, unknown>,
+  ctx: { id: string; symbol: string | null; beforeCount?: number },
+): FinishResult {
+  const { id, symbol } = ctx;
+  if (typeof stx.createDrawing !== "function" || typeof stx.exportDrawings !== "function") {
+    return { error: makeError(id, "ENGINE_NOT_FOUND", "ChartIQ drawing API unavailable on this engine", symbol) };
+  }
+  const panelName =
+    (typeof createParams.pnl === "string" && createParams.pnl) || stx.chart?.panel?.name || "chart";
+  if (createParams.pnl === undefined) createParams.pnl = panelName;
+
+  const beforeCount = ctx.beforeCount ?? stx.exportDrawings().length;
+
+  const drawing = stx.createDrawing(ciqName, createParams);
+  if (typeof drawing.adjust === "function") {
+    drawing.panelName ??= panelName;
+    drawing.adjust();
+  }
+  stx.draw?.();
+
+  const exported = stx.exportDrawings();
+  if (exported.length <= beforeCount) {
+    return {
+      error: makeError(
+        id,
+        "BAD_REQUEST",
+        `createDrawing("${ciqName}", …) did not add a drawing — check the tool name/params ` +
+          "(hand-draw it once on Yahoo, then read_drawings to harvest the exact serialized params)",
+        symbol,
+      ),
+    };
+  }
+  const mineRaw = exported[exported.length - 1];
+  const drawn = toFriendlyDrawing(mineRaw ?? { name: ciqName });
+  const result: DrawResult = {
+    symbol,
+    drawn,
+    total_drawings: exported.length,
+    fingerprint: fingerprintOf(mineRaw, ciqName),
+  };
+  return { result };
+}
+
+/** Bake fill_color + optional fill_opacity into an `fc` serialized value. */
+function fillColorField(params: StyleArgs): string | undefined {
+  if (typeof params.fill_color !== "string" || !params.fill_color) return undefined;
+  return typeof params.fill_opacity === "number" && Number.isFinite(params.fill_opacity)
+    ? rgbaFrom(params.fill_color, params.fill_opacity)
+    : params.fill_color;
+}
+
+/**
+ * Generic two-point drawings sharing the segment recipe. Base users:
+ * ray / rectangle / channel (007); extended to trendline / line / arrow /
+ * ellipse / gann fan / speed arc / speed line / time cycle / measurement line.
+ * `extraFields` lets a caller inject additional serialized keys (e.g. al).
+ */
+function handleDrawTwoPoint(
+  id: string,
+  ciqName: string,
+  params: DrawTwoPointParams,
+  extraFields?: Record<string, unknown>,
+): ToolResponse {
   const r = resolveEngine();
   if (!r.engine) return makeError(id, r.error_code, r.message, r.symbol, r.hint);
   const stx = r.engine;
@@ -1244,9 +1349,6 @@ function handleDrawTwoPoint(id: string, ciqName: string, params: DrawTwoPointPar
   if (typeof date1 !== "string" || !date1 || typeof date2 !== "string" || !date2) {
     return makeError(id, "BAD_REQUEST", "date1 and date2 are required", symbol);
   }
-  if (typeof stx.createDrawing !== "function" || typeof stx.exportDrawings !== "function") {
-    return makeError(id, "ENGINE_NOT_FOUND", "ChartIQ drawing API unavailable on this engine", symbol);
-  }
   const dataSet = stx.chart?.dataSet;
   if (!Array.isArray(dataSet) || dataSet.length === 0) {
     return makeError(id, "DATA_NOT_READY", "engine has no dataSet loaded yet", symbol);
@@ -1258,46 +1360,24 @@ function handleDrawTwoPoint(id: string, ciqName: string, params: DrawTwoPointPar
 
   const usedColor = params.color ?? "auto";
   const usedLineWidth = params.line_width && params.line_width > 0 ? params.line_width : 1;
-  const panelName = stx.chart?.panel?.name ?? "chart";
 
   const createParams: Record<string, unknown> = {
-    pnl: panelName,
     d0: snap1.ciqDate,
     v0: price1,
     d1: snap2.ciqDate,
     v1: price2,
     col: usedColor,
     lw: usedLineWidth,
-    ptrn: "solid",
+    ptrn: params.pattern ?? "solid",
   };
-  if (typeof params.fill_color === "string" && params.fill_color) createParams.fc = params.fill_color;
+  const fc = fillColorField(params);
+  if (fc !== undefined) createParams.fc = fc;
+  if (extraFields) Object.assign(createParams, extraFields);
 
-  const drawing = stx.createDrawing(ciqName, createParams);
-  if (typeof drawing.adjust === "function") {
-    drawing.panelName ??= panelName;
-    drawing.adjust();
-  }
-  stx.draw?.();
-
-  const exported = stx.exportDrawings();
-  const mineRaw = exported.find(
-    (dobj) => dobj["name"] === ciqName && dobj["v0"] === price1 && dobj["v1"] === price2,
-  );
-  const drawn: FriendlyDrawing = {
-    type: ciqName,
-    price: null,
-    color: usedColor,
-    line_width: usedLineWidth,
-    pattern: "solid",
-    raw: mineRaw ?? { name: ciqName, v0: price1, v1: price2, col: usedColor, lw: usedLineWidth },
-  };
-  const result: DrawResult = {
-    symbol,
-    drawn,
-    total_drawings: exported.length,
-    fingerprint: fingerprintOf(mineRaw, ciqName),
-    snapped: { date1: snap1.isoDate, date2: snap2.isoDate },
-  };
+  const fin = finishDrawing(stx, ciqName, createParams, { id, symbol });
+  if ("error" in fin) return fin.error;
+  const result = fin.result;
+  result.snapped = { date1: snap1.isoDate, date2: snap2.isoDate };
   const hint = viewHint(symbol);
   if (hint !== undefined) result.view_hint = hint;
   return { id, ok: true, symbol, data: result };
@@ -1326,42 +1406,27 @@ function handleDrawVertical(id: string, params: DrawVerticalParams): ToolRespons
   const usedColor = params.color ?? "auto";
   const usedLineWidth = params.line_width && params.line_width > 0 ? params.line_width : 1;
   const usedPattern = params.pattern ?? "solid";
-  const panelName = stx.chart?.panel?.name ?? "chart";
   // A vertical is time-only; ChartIQ still wants a v0 to anchor the label. The
   // latest close is a stable, on-screen choice.
   const anchorPrice = toBar(dataSet[dataSet.length - 1])?.close ?? 0;
 
-  const drawing = stx.createDrawing("vertical", {
-    pnl: panelName,
+  const createParams: Record<string, unknown> = {
     d0: snap.ciqDate,
     v0: anchorPrice,
     col: usedColor,
     lw: usedLineWidth,
     ptrn: usedPattern,
-  });
-  if (typeof drawing.adjust === "function") {
-    drawing.panelName ??= panelName;
-    drawing.adjust();
-  }
-  stx.draw?.();
+  };
+  if (typeof params.axis_label === "boolean") createParams.al = params.axis_label;
+  if (typeof params.span_panels === "boolean") createParams.sp = params.span_panels;
 
-  const exported = stx.exportDrawings();
-  const mineRaw = exported.find((dobj) => dobj["name"] === "vertical" && dobj["d0"] === snap.ciqDate);
-  const drawn: FriendlyDrawing = {
-    type: "vertical",
-    price: null,
-    color: usedColor,
-    line_width: usedLineWidth,
-    pattern: usedPattern,
-    raw: mineRaw ?? { name: "vertical", d0: snap.ciqDate, col: usedColor, lw: usedLineWidth },
-  };
-  const result: DrawResult = {
-    symbol,
-    drawn,
-    total_drawings: exported.length,
-    fingerprint: fingerprintOf(mineRaw, "vertical"),
-    snapped: { date1: snap.isoDate, date2: null },
-  };
+  const fin = finishDrawing(stx, "vertical", createParams, { id, symbol });
+  if ("error" in fin) return fin.error;
+  const result = fin.result;
+  // v0 is only a synthetic label anchor (latest close) for a time-only line — don't
+  // report it as a meaningful price level to the caller.
+  if (result.drawn) result.drawn.price = null;
+  result.snapped = { date1: snap.isoDate, date2: null };
   const hint = viewHint(symbol);
   if (hint !== undefined) result.view_hint = hint;
   return { id, ok: true, symbol, data: result };
@@ -1396,42 +1461,31 @@ function handleDrawCallout(id: string, params: DrawCalloutParams): ToolResponse 
   const boxed = params.boxed !== false; // default boxed (callout)
   const ciqName = boxed ? "callout" : "annotation";
   const usedColor = params.color ?? "#000000";
-  const panelName = stx.chart?.panel?.name ?? "chart";
 
   // ChartIQ stores text URL-encoded internally; passing the plain string is
   // correct (it round-trips to the plain text on render). Verified on live Yahoo.
-  const drawing = stx.createDrawing(ciqName, {
-    pnl: panelName,
+  const createParams: Record<string, unknown> = {
     d0: snap.ciqDate,
     v0: params.price,
     text: params.text,
     col: usedColor,
-  });
-  if (typeof drawing.adjust === "function") {
-    drawing.panelName ??= panelName;
-    drawing.adjust();
-  }
-  stx.draw?.();
+  };
+  if (typeof params.line_width === "number" && params.line_width > 0) createParams.lw = params.line_width;
+  if (typeof params.pattern === "string" && params.pattern) createParams.ptrn = params.pattern;
+  if (typeof params.border_color === "string" && params.border_color) createParams.bc = params.border_color;
+  if (typeof params.bg_color === "string" && params.bg_color) createParams.bg = params.bg_color;
+  // fnt sub-keys (Layer 3): sz is a NUMBER px (not "14px"), wt weight, st style, fl family.
+  const fnt: Record<string, unknown> = {};
+  if (typeof params.font_size === "number") fnt.sz = params.font_size;
+  if (typeof params.font_weight === "string" && params.font_weight) fnt.wt = params.font_weight;
+  if (typeof params.font_style === "string" && params.font_style) fnt.st = params.font_style;
+  if (typeof params.font_family === "string" && params.font_family) fnt.fl = params.font_family;
+  if (Object.keys(fnt).length > 0) createParams.fnt = fnt;
 
-  const exported = stx.exportDrawings();
-  const mineRaw = exported.find(
-    (dobj) => dobj["name"] === ciqName && dobj["v0"] === params.price && decodeText(dobj["text"]) === params.text,
-  );
-  const drawn: FriendlyDrawing = {
-    type: ciqName,
-    price: params.price,
-    color: usedColor,
-    line_width: null,
-    pattern: null,
-    raw: mineRaw ?? { name: ciqName, v0: params.price, text: params.text, col: usedColor },
-  };
-  const result: DrawResult = {
-    symbol,
-    drawn,
-    total_drawings: exported.length,
-    fingerprint: fingerprintOf(mineRaw, ciqName),
-    snapped: { date1: snap.isoDate, date2: null },
-  };
+  const fin = finishDrawing(stx, ciqName, createParams, { id, symbol });
+  if ("error" in fin) return fin.error;
+  const result = fin.result;
+  result.snapped = { date1: snap.isoDate, date2: null };
   const hint = viewHint(symbol);
   if (hint !== undefined) result.view_hint = hint;
   return { id, ok: true, symbol, data: result };
@@ -1454,34 +1508,272 @@ function handleDrawRaw(id: string, params: DrawRawParams): ToolResponse {
     return makeError(id, "ENGINE_NOT_FOUND", "ChartIQ drawing API unavailable on this engine", symbol);
   }
 
-  const panelName = stx.chart?.panel?.name ?? "chart";
-  const createParams: Record<string, unknown> = { pnl: panelName, ...params.params };
-  const beforeCount = stx.exportDrawings().length;
-  const drawing = stx.createDrawing(params.type, createParams);
-  if (typeof drawing.adjust === "function") {
-    drawing.panelName ??= panelName;
-    drawing.adjust();
-  }
-  stx.draw?.();
+  const createParams: Record<string, unknown> = { ...params.params };
+  const fin = finishDrawing(stx, params.type, createParams, { id, symbol });
+  if ("error" in fin) return fin.error;
+  const result = fin.result;
+  const hint = viewHint(symbol);
+  if (hint !== undefined) result.view_hint = hint;
+  return { id, ok: true, symbol, data: result };
+}
 
-  const exported = stx.exportDrawings();
-  if (exported.length <= beforeCount) {
+/**
+ * One-point crossline (date + price). Like a horizontal but time-anchored; the
+ * serialized shape carries `v0/d0` plus optional `al` (axis label) and `sp`
+ * (span all panels).
+ */
+function handleDrawCrossline(id: string, params: DrawCrosslineParams): ToolResponse {
+  const r = resolveEngine();
+  if (!r.engine) return makeError(id, r.error_code, r.message, r.symbol, r.hint);
+  const stx = r.engine;
+  const symbol = r.symbol;
+
+  if (typeof params.price !== "number" || !Number.isFinite(params.price)) {
+    return makeError(id, "BAD_REQUEST", "price must be a finite number", symbol);
+  }
+  if (typeof params.date !== "string" || !params.date) {
+    return makeError(id, "BAD_REQUEST", "date is required", symbol);
+  }
+  const dataSet = stx.chart?.dataSet;
+  if (!Array.isArray(dataSet) || dataSet.length === 0) {
+    return makeError(id, "DATA_NOT_READY", "engine has no dataSet loaded yet", symbol);
+  }
+  const snap = snapToNearestBar(dataSet, params.date);
+  if ("error" in snap) return makeError(id, "BAD_REQUEST", snap.error, symbol);
+
+  const usedColor = params.color ?? "auto";
+  const usedLineWidth = params.line_width && params.line_width > 0 ? params.line_width : 1;
+  const createParams: Record<string, unknown> = {
+    v0: params.price,
+    d0: snap.ciqDate,
+    col: usedColor,
+    lw: usedLineWidth,
+    ptrn: params.pattern ?? "solid",
+  };
+  if (typeof params.axis_label === "boolean") createParams.al = params.axis_label;
+  if (typeof params.span_panels === "boolean") createParams.sp = params.span_panels;
+
+  const fin = finishDrawing(stx, "crossline", createParams, { id, symbol });
+  if ("error" in fin) return fin.error;
+  const result = fin.result;
+  result.snapped = { date1: snap.isoDate, date2: null };
+  const hint = viewHint(symbol);
+  if (hint !== undefined) result.view_hint = hint;
+  return { id, ok: true, symbol, data: result };
+}
+
+/** Three full anchor points (v0/d0, v1/d1, v2/d2) — used by pitchfork. */
+function handleDrawThreePoint(id: string, ciqName: string, params: DrawThreePointParams): ToolResponse {
+  const r = resolveEngine();
+  if (!r.engine) return makeError(id, r.error_code, r.message, r.symbol, r.hint);
+  const stx = r.engine;
+  const symbol = r.symbol;
+
+  const { date1, price1, date2, price2, date3, price3 } = params;
+  const prices: Array<[string, unknown]> = [
+    ["price1", price1],
+    ["price2", price2],
+    ["price3", price3],
+  ];
+  for (const [label, v] of prices) {
+    if (typeof v !== "number" || !Number.isFinite(v)) {
+      return makeError(id, "BAD_REQUEST", `${label} must be a finite number`, symbol);
+    }
+  }
+  if (
+    typeof date1 !== "string" || !date1 ||
+    typeof date2 !== "string" || !date2 ||
+    typeof date3 !== "string" || !date3
+  ) {
+    return makeError(id, "BAD_REQUEST", "date1, date2 and date3 are required", symbol);
+  }
+  const dataSet = stx.chart?.dataSet;
+  if (!Array.isArray(dataSet) || dataSet.length === 0) {
+    return makeError(id, "DATA_NOT_READY", "engine has no dataSet loaded yet", symbol);
+  }
+  const snap1 = snapToNearestBar(dataSet, date1);
+  if ("error" in snap1) return makeError(id, "BAD_REQUEST", snap1.error, symbol);
+  const snap2 = snapToNearestBar(dataSet, date2);
+  if ("error" in snap2) return makeError(id, "BAD_REQUEST", snap2.error, symbol);
+  const snap3 = snapToNearestBar(dataSet, date3);
+  if ("error" in snap3) return makeError(id, "BAD_REQUEST", snap3.error, symbol);
+
+  const usedColor = params.color ?? "auto";
+  const usedLineWidth = params.line_width && params.line_width > 0 ? params.line_width : 1;
+  const createParams: Record<string, unknown> = {
+    d0: snap1.ciqDate,
+    v0: price1,
+    d1: snap2.ciqDate,
+    v1: price2,
+    d2: snap3.ciqDate,
+    v2: price3,
+    col: usedColor,
+    lw: usedLineWidth,
+    ptrn: params.pattern ?? "solid",
+  };
+  const fc = fillColorField(params);
+  if (fc !== undefined) createParams.fc = fc;
+
+  const fin = finishDrawing(stx, ciqName, createParams, { id, symbol });
+  if ("error" in fin) return fin.error;
+  const result = fin.result;
+  result.snapped = { date1: snap1.isoDate, date2: snap2.isoDate };
+  const hint = viewHint(symbol);
+  if (hint !== undefined) result.view_hint = hint;
+  return { id, ok: true, symbol, data: result };
+}
+
+/**
+ * Range-anchored tools (volumeprofile / quadrant / tirone / average /
+ * regression): anchored by two DATES only — `d0/d1`, NO `v0/v1`. Price levels
+ * are computed by the engine from the data in that window. Optional extras:
+ * `fc` (fill), `al` (axis label), `pb` (price buckets, volume profile), and
+ * std-dev `bands` → `dev/col/lw/ptrn` 1..3 (average/regression; `lwN` is a
+ * STRING per Layer 3, `ptrnN` defaults "dotted").
+ */
+function handleDrawRange(id: string, ciqName: string, params: DrawRangeParams): ToolResponse {
+  const r = resolveEngine();
+  if (!r.engine) return makeError(id, r.error_code, r.message, r.symbol, r.hint);
+  const stx = r.engine;
+  const symbol = r.symbol;
+
+  const { date1, date2 } = params;
+  if (typeof date1 !== "string" || !date1 || typeof date2 !== "string" || !date2) {
+    return makeError(id, "BAD_REQUEST", "date1 and date2 are required", symbol);
+  }
+  const dataSet = stx.chart?.dataSet;
+  if (!Array.isArray(dataSet) || dataSet.length === 0) {
+    return makeError(id, "DATA_NOT_READY", "engine has no dataSet loaded yet", symbol);
+  }
+  const snap1 = snapToNearestBar(dataSet, date1);
+  if ("error" in snap1) return makeError(id, "BAD_REQUEST", snap1.error, symbol);
+  const snap2 = snapToNearestBar(dataSet, date2);
+  if ("error" in snap2) return makeError(id, "BAD_REQUEST", snap2.error, symbol);
+
+  const usedColor = params.color ?? "auto";
+  const usedLineWidth = params.line_width && params.line_width > 0 ? params.line_width : 1;
+  const createParams: Record<string, unknown> = {
+    d0: snap1.ciqDate,
+    d1: snap2.ciqDate,
+    col: usedColor,
+    lw: usedLineWidth,
+    ptrn: params.pattern ?? "solid",
+  };
+  // Bake fill_opacity into fc like every other fill path (consistent with rectangle/
+  // ellipse); fillColorField passes the color raw when no opacity is given.
+  const rangeFc = fillColorField(params);
+  if (rangeFc !== undefined) createParams.fc = rangeFc;
+  if (typeof params.axis_label === "boolean") createParams.al = params.axis_label;
+  if (typeof params.price_buckets === "number" && params.price_buckets > 0) {
+    createParams.pb = Math.floor(params.price_buckets);
+  }
+  if (Array.isArray(params.bands)) {
+    params.bands.slice(0, 3).forEach((band, i) => {
+      const n = i + 1;
+      createParams[`dev${n}`] = band.enabled !== false; // present ⇒ on unless explicitly disabled
+      if (typeof band.color === "string" && band.color) createParams[`col${n}`] = band.color;
+      if (typeof band.line_width === "number") createParams[`lw${n}`] = String(band.line_width); // STRING per Layer 3
+      createParams[`ptrn${n}`] = band.pattern ?? "dotted";
+    });
+  }
+
+  const fin = finishDrawing(stx, ciqName, createParams, { id, symbol });
+  if ("error" in fin) return fin.error;
+  const result = fin.result;
+  result.snapped = { date1: snap1.isoDate, date2: snap2.isoDate };
+  const hint = viewHint(symbol);
+  if (hint !== undefined) result.view_hint = hint;
+  return { id, ok: true, symbol, data: result };
+}
+
+/**
+ * Gartley harmonic pattern (5 points X/A/B/C/D). Serialized shape (Layer 3b):
+ * `v0/d0` = X, `v1/d1` = D, and the 3 intermediate points A/B/C packed into
+ * `pts` = a comma string of 9 items `"d,tzo,v,d,tzo,v,d,tzo,v"` (tzo = tz offset,
+ * 0 here). Geometry is fiddly: if ChartIQ's adjust() rejects the shape we return
+ * a clear BAD_REQUEST rather than a bare INTERNAL.
+ */
+function handleDrawGartley(id: string, params: DrawGartleyParams): ToolResponse {
+  const r = resolveEngine();
+  if (!r.engine) return makeError(id, r.error_code, r.message, r.symbol, r.hint);
+  const stx = r.engine;
+  const symbol = r.symbol;
+
+  const pricePairs: Array<[string, unknown]> = [
+    ["xPrice", params.xPrice],
+    ["aPrice", params.aPrice],
+    ["bPrice", params.bPrice],
+    ["cPrice", params.cPrice],
+    ["dPrice", params.dPrice],
+  ];
+  for (const [label, v] of pricePairs) {
+    if (typeof v !== "number" || !Number.isFinite(v)) {
+      return makeError(id, "BAD_REQUEST", `${label} must be a finite number`, symbol);
+    }
+  }
+  const dateFields: Array<[string, unknown]> = [
+    ["xDate", params.xDate],
+    ["aDate", params.aDate],
+    ["bDate", params.bDate],
+    ["cDate", params.cDate],
+    ["dDate", params.dDate],
+  ];
+  for (const [label, v] of dateFields) {
+    if (typeof v !== "string" || !v) {
+      return makeError(id, "BAD_REQUEST", `${label} is required`, symbol);
+    }
+  }
+  const dataSet = stx.chart?.dataSet;
+  if (!Array.isArray(dataSet) || dataSet.length === 0) {
+    return makeError(id, "DATA_NOT_READY", "engine has no dataSet loaded yet", symbol);
+  }
+  const snapX = snapToNearestBar(dataSet, params.xDate);
+  if ("error" in snapX) return makeError(id, "BAD_REQUEST", snapX.error, symbol);
+  const snapA = snapToNearestBar(dataSet, params.aDate);
+  if ("error" in snapA) return makeError(id, "BAD_REQUEST", snapA.error, symbol);
+  const snapB = snapToNearestBar(dataSet, params.bDate);
+  if ("error" in snapB) return makeError(id, "BAD_REQUEST", snapB.error, symbol);
+  const snapC = snapToNearestBar(dataSet, params.cDate);
+  if ("error" in snapC) return makeError(id, "BAD_REQUEST", snapC.error, symbol);
+  const snapD = snapToNearestBar(dataSet, params.dDate);
+  if ("error" in snapD) return makeError(id, "BAD_REQUEST", snapD.error, symbol);
+
+  const usedColor = params.color ?? "auto";
+  const usedLineWidth = params.line_width && params.line_width > 0 ? params.line_width : 1;
+  // A/B/C → 9-item "d,tzo,v,..." string (tz offset 0 for each).
+  const pts = [
+    snapA.ciqDate, 0, params.aPrice,
+    snapB.ciqDate, 0, params.bPrice,
+    snapC.ciqDate, 0, params.cPrice,
+  ].join(",");
+  const createParams: Record<string, unknown> = {
+    d0: snapX.ciqDate,
+    v0: params.xPrice,
+    d1: snapD.ciqDate,
+    v1: params.dPrice,
+    pts,
+    col: usedColor,
+    lw: usedLineWidth,
+    ptrn: params.pattern ?? "solid",
+  };
+  const fc = fillColorField(params);
+  if (fc !== undefined) createParams.fc = fc;
+
+  let fin: FinishResult;
+  try {
+    fin = finishDrawing(stx, "gartley", createParams, { id, symbol });
+  } catch (e) {
     return makeError(
       id,
       "BAD_REQUEST",
-      `createDrawing("${params.type}", …) did not add a drawing — check the tool name/params ` +
-        "(hand-draw it once on Yahoo, then read_drawings to harvest the exact serialized params)",
+      `gartley geometry rejected by the engine (${e instanceof Error ? e.message : String(e)}) — ` +
+        "check that X/A/B/C/D form a valid harmonic (alternating swings)",
       symbol,
     );
   }
-  const mineRaw = exported[exported.length - 1];
-  const drawn = toFriendlyDrawing(mineRaw ?? { name: params.type });
-  const result: DrawResult = {
-    symbol,
-    drawn,
-    total_drawings: exported.length,
-    fingerprint: fingerprintOf(mineRaw, params.type),
-  };
+  if ("error" in fin) return fin.error;
+  const result = fin.result;
+  result.snapped = { date1: snapX.isoDate, date2: snapD.isoDate };
   const hint = viewHint(symbol);
   if (hint !== undefined) result.view_hint = hint;
   return { id, ok: true, symbol, data: result };
@@ -1782,11 +2074,20 @@ async function handleListIndicators(id: string): Promise<ToolResponse> {
   const available = Object.keys(library)
     .map((k) => stripZW(k))
     .sort();
-  const result: ListIndicatorsResult = {
+  // Per-study output color-key names (from studyLibrary[type].outputs) so the AI
+  // knows which keys the add_indicator `outputs` arg accepts (e.g. "Bollinger
+  // Bands Top"). Keyed by the same normalized name as `available`.
+  const availableOutputs: Record<string, string[]> = {};
+  for (const rawKey of Object.keys(library)) {
+    const entry = (library as Record<string, unknown>)[rawKey] as { outputs?: Record<string, unknown> } | undefined;
+    availableOutputs[stripZW(rawKey)] = Object.keys(entry?.outputs ?? {});
+  }
+  const result: ListIndicatorsResult & { available_outputs: Record<string, string[]> } = {
     symbol,
     available,
     available_count: available.length,
     active: activeStudies(stx),
+    available_outputs: availableOutputs,
   };
   return { id, ok: true, symbol, data: result };
 }
@@ -1835,9 +2136,16 @@ async function handleAddIndicator(id: string, params: AddIndicatorParams): Promi
     );
   }
 
+  // outputs (arg 4) = per-output-line color/style; parameters (arg 5) = display/
+  // panelName/zones. Read via a local superset so content-main compiles ahead of
+  // the shared-protocol type update (Agent C).
+  const ext = params as AddIndicatorParams & {
+    outputs?: Record<string, unknown>;
+    parameters?: Record<string, unknown>;
+  };
   let sd: any;
   try {
-    sd = ciq.Studies.addStudy(stx, key, params.inputs ?? {});
+    sd = ciq.Studies.addStudy(stx, key, params.inputs ?? {}, ext.outputs ?? undefined, ext.parameters ?? undefined);
     stx.draw?.();
   } catch (e) {
     return makeError(id, "INTERNAL", e instanceof Error ? e.message : String(e), symbol);
@@ -2007,15 +2315,55 @@ function route(request: {
     case "draw_support":
       return handleDrawSupport(request.id, request.params as unknown as DrawSupportParams);
     case "draw_trendline":
-      return handleDrawTrendline(request.id, request.params as unknown as DrawTrendlineParams);
+      return handleDrawTwoPoint(request.id, "segment", request.params as unknown as DrawTwoPointParams);
     case "draw_fib":
-      return handleDrawFib(request.id, request.params as unknown as DrawFibParams);
+      return handleDrawFibFamily(request.id, "fibonacci", request.params as unknown as DrawFibFamilyParams);
+    case "draw_fib_arc":
+      return handleDrawFibFamily(request.id, "fibarc", request.params as unknown as DrawFibFamilyParams);
+    case "draw_fib_fan":
+      return handleDrawFibFamily(request.id, "fibfan", request.params as unknown as DrawFibFamilyParams);
+    case "draw_fib_projection":
+      return handleDrawFibFamily(request.id, "fibprojection", request.params as unknown as DrawFibFamilyParams);
+    case "draw_fib_timezone":
+      return handleDrawFibFamily(request.id, "fibtimezone", request.params as unknown as DrawFibFamilyParams);
     case "draw_ray":
       return handleDrawTwoPoint(request.id, "ray", request.params as unknown as DrawTwoPointParams);
     case "draw_rectangle":
       return handleDrawTwoPoint(request.id, "rectangle", request.params as unknown as DrawTwoPointParams);
     case "draw_channel":
       return handleDrawTwoPoint(request.id, "channel", request.params as unknown as DrawTwoPointParams);
+    case "draw_line":
+      return handleDrawTwoPoint(request.id, "line", request.params as unknown as DrawTwoPointParams);
+    case "draw_arrow":
+      return handleDrawTwoPoint(request.id, "arrowline", request.params as unknown as DrawTwoPointParams);
+    case "draw_ellipse":
+      return handleDrawTwoPoint(request.id, "ellipse", request.params as unknown as DrawTwoPointParams);
+    case "draw_gann_fan":
+      return handleDrawTwoPoint(request.id, "gannfan", request.params as unknown as DrawTwoPointParams);
+    case "draw_speed_arc":
+      return handleDrawTwoPoint(request.id, "speedarc", request.params as unknown as DrawTwoPointParams);
+    case "draw_speed_line":
+      return handleDrawTwoPoint(request.id, "speedline", request.params as unknown as DrawTwoPointParams);
+    case "draw_time_cycle":
+      return handleDrawTwoPoint(request.id, "timecycle", request.params as unknown as DrawTwoPointParams);
+    case "draw_measurement":
+      return handleDrawTwoPoint(request.id, "measurementline", request.params as unknown as DrawTwoPointParams);
+    case "draw_crossline":
+      return handleDrawCrossline(request.id, request.params as unknown as DrawCrosslineParams);
+    case "draw_pitchfork":
+      return handleDrawThreePoint(request.id, "pitchfork", request.params as unknown as DrawThreePointParams);
+    case "draw_volume_profile":
+      return handleDrawRange(request.id, "volumeprofile", request.params as unknown as DrawRangeParams);
+    case "draw_quadrant_lines":
+      return handleDrawRange(request.id, "quadrant", request.params as unknown as DrawRangeParams);
+    case "draw_tirone_levels":
+      return handleDrawRange(request.id, "tirone", request.params as unknown as DrawRangeParams);
+    case "draw_average_line":
+      return handleDrawRange(request.id, "average", request.params as unknown as DrawRangeParams);
+    case "draw_regression_line":
+      return handleDrawRange(request.id, "regression", request.params as unknown as DrawRangeParams);
+    case "draw_gartley":
+      return handleDrawGartley(request.id, request.params as unknown as DrawGartleyParams);
     case "draw_vertical":
       return handleDrawVertical(request.id, request.params as unknown as DrawVerticalParams);
     case "draw_callout":

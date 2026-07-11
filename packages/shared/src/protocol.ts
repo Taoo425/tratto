@@ -260,6 +260,10 @@ export interface DrawSupportParams {
   color?: string;
   /** Line width in pixels. Optional; defaults to 1. */
   line_width?: number;
+  /** Line pattern: "solid" | "dashed" | "dotted". Optional; defaults to solid. */
+  pattern?: string;
+  /** Show a price label on the y-axis. Optional. */
+  axis_label?: boolean;
 }
 
 /**
@@ -308,9 +312,34 @@ export interface DrawTrendlineParams {
   color?: string;
   /** Line width in pixels. Optional; defaults to 1. */
   line_width?: number;
+  /** Line pattern: "solid" | "dashed" | "dotted". Optional; defaults to solid. */
+  pattern?: string;
 }
 
-export interface DrawFibParams {
+/**
+ * Style fields shared by the fibonacci family (draw_fib + draw_fib_arc/fan/
+ * projection/timezone). `levels` are FRACTIONS (0.618, 1.272, -0.786), not
+ * percents; omitted → engine's default-ON level set.
+ */
+export interface FibStyleParams {
+  line_width?: number;
+  /** Line pattern: "solid" | "dashed" | "dotted". Optional; defaults to solid. */
+  pattern?: string;
+  /** Fib level fractions to draw, e.g. [0.382, 0.5, 0.618]. Optional; engine default set otherwise. */
+  levels?: number[];
+  /** Color for the level lines (distinct from the anchor/trend line color). Optional. */
+  level_color?: string;
+  /** Print level labels (percent text) next to each line. Optional; defaults to true. */
+  show_labels?: boolean;
+  /** Print price values next to each level line. Optional; defaults to false. */
+  show_prices?: boolean;
+  /** Extend the fib lines to the left of the first anchor. Optional; defaults to false. */
+  extend_left?: boolean;
+  /** Fill color between adjacent levels, where supported. Optional. */
+  fill_color?: string;
+}
+
+export interface DrawFibParams extends FibStyleParams {
   /** Date (ISO-ish string) for anchor point 1 (typically a swing high or low). Required. */
   date1: string;
   /** Price (y-axis value) for anchor point 1. Required. */
@@ -380,7 +409,14 @@ export interface ReadDrawingsResult {
 // + draw_raw escape hatch. Recipes empirically harvested on live Yahoo.
 // ---------------------------------------------------------------------------
 
-/** Two-point drawings that share the segment recipe (ray, rectangle, channel). */
+/**
+ * Two-point drawings that share the segment recipe: ray, rectangle, channel,
+ * plus the newer 2-point line/shape family (line, arrow, ellipse, gann_fan,
+ * speed_arc, speed_line, time_cycle, measurement). Not every field is
+ * meaningful for every tool (e.g. `fill_opacity` only affects rectangle/
+ * channel/ellipse) — unused optional fields are simply ignored by the
+ * corresponding MAIN handler.
+ */
 export interface DrawTwoPointParams {
   date1: string;
   price1: number;
@@ -388,8 +424,12 @@ export interface DrawTwoPointParams {
   price2: number;
   color?: string;
   line_width?: number;
-  /** Fill color for area shapes (rectangle/channel). Optional; engine derives one if omitted. */
+  /** Line pattern: "solid" | "dashed" | "dotted". Optional; defaults to solid. */
+  pattern?: string;
+  /** Fill color for area shapes (rectangle/channel/ellipse) or an arrowhead (arrow). Optional. */
   fill_color?: string;
+  /** Fill opacity 0–1, baked into `fill_color` as rgba by the MAIN handler. Optional. */
+  fill_opacity?: number;
 }
 
 /** A vertical line at a single time anchor. */
@@ -399,6 +439,39 @@ export interface DrawVerticalParams {
   line_width?: number;
   /** Line pattern: "solid" | "dashed" | "dotted". Optional; defaults to solid. */
   pattern?: string;
+  /** Show a price/time label on the axis. Optional. */
+  axis_label?: boolean;
+  /** Draw the vertical line across all panels (not just the price panel). Optional. */
+  span_panels?: boolean;
+}
+
+/** A single time anchor with a price label — a horizontal+vertical crosshair line. */
+export interface DrawCrosslineParams {
+  date: string;
+  price: number;
+  color?: string;
+  line_width?: number;
+  /** Line pattern: "solid" | "dashed" | "dotted". Optional; defaults to solid. */
+  pattern?: string;
+  axis_label?: boolean;
+  span_panels?: boolean;
+}
+
+/** Three-point drawings (pitchfork; also reused for 3-point fib tools' geometry). */
+export interface DrawThreePointParams {
+  date1: string;
+  price1: number;
+  date2: string;
+  price2: number;
+  date3: string;
+  price3: number;
+  color?: string;
+  line_width?: number;
+  /** Line pattern: "solid" | "dashed" | "dotted". Optional; defaults to solid. */
+  pattern?: string;
+  fill_color?: string;
+  /** Fill opacity 0–1, baked into `fill_color` as rgba by the MAIN handler. Optional. */
+  fill_opacity?: number;
 }
 
 /** A text callout/annotation anchored at a (date, price). */
@@ -409,6 +482,18 @@ export interface DrawCalloutParams {
   color?: string;
   /** true → boxed callout; false → borderless annotation. Defaults to true (boxed). */
   boxed?: boolean;
+  line_width?: number;
+  /** Line pattern: "solid" | "dashed" | "dotted". Optional; defaults to solid. */
+  pattern?: string;
+  /** Border color (boxed callout only; ignored by borderless annotation). Optional. */
+  border_color?: string;
+  /** Background fill color. Optional. */
+  bg_color?: string;
+  /** Font size in pixels (a number, not a CSS string like "14px"). Optional. */
+  font_size?: number;
+  font_weight?: string;
+  font_style?: string;
+  font_family?: string;
 }
 
 /** Escape hatch: pass a ChartIQ tool name + already-serialized params straight through. */
@@ -442,6 +527,96 @@ export interface DrawingMatch {
   d1?: string;
   /** For text tools (callout/annotation); compared after URL-decoding. */
   text?: string;
+}
+
+// ---------------------------------------------------------------------------
+// MCP style expansion: fib-family variants, range-anchored tools, and the
+// 5-point gartley harmonic. Points/dates are friendly ISO-ish strings snapped
+// server-side to the nearest loaded bar (see SnappedEndpoints); style args
+// mirror the Section-1 enrichments (pattern/fill_opacity/axis_label/etc).
+// ---------------------------------------------------------------------------
+
+/**
+ * 3-point fib tools (draw_fib_arc/fan/projection). draw_fib_arc/fan have NO
+ * `date3` — their 3rd anchor is an offset-only `price3` (no separate date).
+ * draw_fib_projection uses all three (date, price) pairs. Both fields are
+ * left optional here to cover both shapes; the concrete MCP tool's zod
+ * schema is the source of truth for which fields a given tool accepts.
+ */
+export interface DrawFibThreePointParams extends FibStyleParams {
+  date1: string;
+  price1: number;
+  date2: string;
+  price2: number;
+  date3?: string;
+  price3?: number;
+  color?: string;
+}
+
+/** draw_fib_timezone: 2-point vertical time-ratio fib (no v-axis levels). */
+export interface DrawFibTimezoneParams extends FibStyleParams {
+  date1: string;
+  price1: number;
+  date2: string;
+  price2: number;
+  color?: string;
+}
+
+/** One deviation band for draw_average_line / draw_regression_line (up to 3, band N = bands[N-1]). */
+export interface DrawBand {
+  /** Defaults to true when the entry is present; set false to include the slot without enabling it. */
+  enabled?: boolean;
+  color?: string;
+  line_width?: number;
+  /** Line pattern: "solid" | "dashed" | "dotted". Optional; defaults to "dotted" for bands. */
+  pattern?: string;
+}
+
+/**
+ * Range-anchored tools: draw_volume_profile, draw_quadrant_lines,
+ * draw_tirone_levels, draw_average_line, draw_regression_line. These take NO
+ * price args — the tool computes price levels from the data between the two
+ * dates. Not every field applies to every tool (e.g. `price_buckets` is
+ * volume_profile-only, `bands`/`axis_label` are average/regression-only);
+ * unused optional fields are ignored by the corresponding MAIN handler.
+ */
+export interface DrawRangeParams {
+  date1: string;
+  date2: string;
+  color?: string;
+  line_width?: number;
+  /** Line pattern: "solid" | "dashed" | "dotted". Optional; defaults to solid. */
+  pattern?: string;
+  fill_color?: string;
+  /** Fill opacity 0–1, baked into `fill_color` as rgba by the MAIN handler. Optional. */
+  fill_opacity?: number;
+  /** draw_volume_profile only: number of horizontal price buckets. Optional; defaults to 30. */
+  price_buckets?: number;
+  /** draw_average_line only: show a price label on the axis. Optional. */
+  axis_label?: boolean;
+  /** draw_average_line / draw_regression_line only: up to 3 deviation bands. Optional. */
+  bands?: DrawBand[];
+}
+
+/** draw_gartley: 5-point harmonic pattern (X, A, B, C, D). */
+export interface DrawGartleyParams {
+  xDate: string;
+  xPrice: number;
+  aDate: string;
+  aPrice: number;
+  bDate: string;
+  bPrice: number;
+  cDate: string;
+  cPrice: number;
+  dDate: string;
+  dPrice: number;
+  color?: string;
+  line_width?: number;
+  /** Line pattern: "solid" | "dashed" | "dotted". Optional; defaults to solid. */
+  pattern?: string;
+  fill_color?: string;
+  /** Fill opacity 0–1, baked into `fill_color` as rgba by the MAIN handler. Optional. */
+  fill_opacity?: number;
 }
 
 // --- removal / undo / clear ------------------------------------------------
@@ -658,6 +833,14 @@ export interface AddIndicatorParams {
   type: string;
   /** Study-specific inputs, e.g. { Period: 14 }. Optional — engine defaults are used otherwise. */
   inputs?: Record<string, unknown>;
+  /**
+   * Per-output-line styling, keyed by the study's output name (see
+   * ListIndicatorsResult's per-study output keys). String value = color
+   * shorthand; object = per-line style. Passed as addStudy's 4th argument.
+   */
+  outputs?: Record<string, string | { color?: string; width?: number; pattern?: string }>;
+  /** Extra addStudy 5th-argument overrides, e.g. { panelName: "New panel" }. Optional. */
+  parameters?: Record<string, unknown>;
 }
 
 export interface RemoveIndicatorParams {
