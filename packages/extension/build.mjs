@@ -3,7 +3,7 @@
 import * as esbuild from "esbuild";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { mkdirSync, copyFileSync } from "node:fs";
+import { mkdirSync, copyFileSync, readFileSync, writeFileSync } from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const outdir = path.join(__dirname, "dist");
@@ -35,7 +35,16 @@ for (const name of ["content-isolated", "content-main", "popup"]) {
   });
 }
 
-copyFileSync(path.join(__dirname, "manifest.json"), path.join(outdir, "manifest.json"));
+// Stamp the manifest version from the single source of truth: the published
+// server package. That's the number `npm publish` actually uses, so the
+// version shown in the extension popup always matches the release without a
+// second manual bump. Bump packages/mcp-server/package.json only.
+const releaseVersion = JSON.parse(
+  readFileSync(path.join(__dirname, "../mcp-server/package.json"), "utf8"),
+).version;
+const manifest = JSON.parse(readFileSync(path.join(__dirname, "manifest.json"), "utf8"));
+manifest.version = releaseVersion;
+writeFileSync(path.join(outdir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
 copyFileSync(path.join(__dirname, "src/popup.html"), path.join(outdir, "popup.html"));
 
 console.log(`[build] extension bundled to ${outdir}`);
