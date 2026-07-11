@@ -1,7 +1,7 @@
 {
   "name": "tratto-mcp-server",
-  "version": "0.1.0",
-  "description": "Local MCP server that lets an AI draw technical-analysis lines (support/resistance, trendlines, Fibonacci) directly on Yahoo Finance's native chart. Fully local, no cloud.",
+  "version": "0.2.0",
+  "description": "Local MCP server that lets your AI draw technical-analysis markup (support/resistance, trendlines, Fibonacci, and more) onto a finance chart already open in your browser, using the page's own drawing engine. Personal, non-commercial, fully local, no cloud.",
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
