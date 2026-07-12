@@ -50,7 +50,11 @@ you › draw the fib from the March low to the June high
   ai › ✎ Fibonacci retracement placed (0 → 100%)
 ```
 
-<!-- Highest-impact upgrade: drop a demo GIF here, an agent prompt followed by the line appearing on a live chart. -->
+<div align="center">
+
+<video src="https://raw.githubusercontent.com/Taoo425/tratto/main/assets/demo.mp4" controls muted playsinline width="720"></video>
+
+</div>
 
 **Reach for Tratto when:**
 
