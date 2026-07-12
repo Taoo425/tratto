@@ -52,7 +52,9 @@ you › draw the fib from the March low to the June high
 
 <div align="center">
 
-<video src="https://raw.githubusercontent.com/Taoo425/tratto/main/assets/demo.mp4" controls muted playsinline width="720"></video>
+[![Tratto demo](assets/demo.gif)](assets/demo.mp4)
+
+<sub>▶ click for full-quality video</sub>
 
 </div>
 
