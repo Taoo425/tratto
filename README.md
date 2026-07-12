@@ -52,7 +52,7 @@ you › draw the fib from the March low to the June high
 
 <div align="center">
 
-https://github.com/user-attachments/assets/8f329058-de2e-4591-8de6-bcd39fb5d2b9
+https://github.com/user-attachments/assets/f2c5c53e-580e-4eaf-8555-4e9ad7c9cefc
 
 </div>
 
